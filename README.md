@@ -1,27 +1,19 @@
 # climp
 
-A minimal CLI media player for MP3 files.
+minimal cli media player.
 
-```
-  climp
+<img width="674" height="230" alt="image" src="https://github.com/user-attachments/assets/f9e49654-36d9-4518-830d-5cabf4c415fa" />
 
-  Weightless - Marconi Union
-  Ambient Works
+# file support
+.mp3
 
-  0:42 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4:20
-
-  ▶  playing                                vol 80%
-
-  space pause  ←/→ seek  ↑/↓ volume  q quit
-```
-
-## Install
+## install
 
 ```bash
 go install github.com/olivier-w/climp@latest
 ```
 
-Or build from source:
+or build from source:
 
 ```bash
 git clone https://github.com/olivier-w/climp.git
@@ -29,23 +21,23 @@ cd climp
 go build -o climp .
 ```
 
-## Usage
+## usage
 
 ```bash
 climp song.mp3
 ```
 
-## Keybindings
+## keybindings
 
-| Key | Action |
+| key | Action |
 |-----|--------|
-| Space | Toggle pause |
-| Left / h | Seek -5s |
-| Right / l | Seek +5s |
-| Up / k | Volume +5% |
-| Down / j | Volume -5% |
-| q / Esc / Ctrl+C | Quit |
+| space | toggle pause |
+| left / h | seek -5s |
+| right / l | seek +5s |
+| up / k | volume +5% |
+| down / j | volume -5% |
+| q / esc / ctrl+c | quit |
 
-## License
+## license
 
 [Apache-2.0](LICENSE)

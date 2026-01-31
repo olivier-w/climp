@@ -32,7 +32,7 @@ func New(p *player.Player, meta player.Metadata) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(tickCmd(), checkDone(m.player))
+	return tea.Batch(tickCmd(), checkDone(m.player), tea.SetWindowTitle(windowTitle(m.metadata.Title, false)))
 }
 
 func checkDone(p *player.Player) tea.Cmd {
@@ -48,12 +48,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if isQuit(msg) {
 			m.quitting = true
 			m.player.Close()
-			return m, tea.Quit
+			return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 		}
 		switch msg.String() {
 		case " ":
 			m.player.TogglePause()
 			m.paused = m.player.Paused()
+			return m, tea.SetWindowTitle(windowTitle(m.metadata.Title, m.paused))
 		case "left", "h":
 			m.player.Seek(-5 * time.Second)
 		case "right", "l":
@@ -77,7 +78,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.elapsed = m.duration
 		m.quitting = true
 		m.player.Close()
-		return m, tea.Quit
+		return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -153,6 +154,13 @@ func (m Model) View() string {
 	lines += "  " + help + "\n"
 
 	return lines
+}
+
+func windowTitle(title string, paused bool) string {
+	if paused {
+		return "⏸ " + title + " — climp"
+	}
+	return "▶ " + title + " — climp"
 }
 
 func spaces(n int) string {

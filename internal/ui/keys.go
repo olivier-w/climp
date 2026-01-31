@@ -11,5 +11,5 @@ func isQuit(msg tea.KeyMsg) bool {
 }
 
 func helpText() string {
-	return "space pause  ←/→ seek  ↑/↓ volume  q quit"
+	return "space pause  ←/→ seek  ↑/↓ volume  r repeat  q quit"
 }

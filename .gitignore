@@ -1,6 +1,7 @@
 # Binaries
 climp
 climp.exe
+climp.exe~
 *.exe
 *.mp3
 *.dll

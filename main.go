@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/olivier-w/climp/internal/downloader"
 	"github.com/olivier-w/climp/internal/player"
 	"github.com/olivier-w/climp/internal/ui"
 )
@@ -17,24 +18,40 @@ func main() {
 		os.Exit(1)
 	}
 
-	path := os.Args[1]
+	arg := os.Args[1]
 
-	// Check file exists
-	info, err := os.Stat(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
-	}
-	if info.IsDir() {
-		fmt.Fprintf(os.Stderr, "Error: %s is a directory\n", path)
-		os.Exit(1)
-	}
+	var path string
+	if downloader.IsURL(arg) {
+		fmt.Fprintf(os.Stderr, "Downloading...\n")
+		dlPath, cleanup, err := downloader.Download(arg, func(line string) {
+			fmt.Fprintf(os.Stderr, "%s\n", line)
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer cleanup()
+		path = dlPath
+	} else {
+		path = arg
 
-	// Check extension
-	ext := strings.ToLower(filepath.Ext(path))
-	if ext != ".mp3" {
-		fmt.Fprintf(os.Stderr, "Error: only .mp3 files are supported (got %s)\n", ext)
-		os.Exit(1)
+		// Check file exists
+		info, err := os.Stat(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if info.IsDir() {
+			fmt.Fprintf(os.Stderr, "Error: %s is a directory\n", path)
+			os.Exit(1)
+		}
+
+		// Check extension
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".mp3" {
+			fmt.Fprintf(os.Stderr, "Error: only .mp3 files are supported (got %s)\n", ext)
+			os.Exit(1)
+		}
 	}
 
 	// Read metadata

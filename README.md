@@ -7,6 +7,16 @@ minimal cli media player.
 # file support
 .mp3
 
+## url support
+
+Play audio from URLs using [yt-dlp](https://github.com/yt-dlp/yt-dlp):
+
+```bash
+climp https://youtube.com/watch?v=dQw4w9WgXcQ
+```
+
+Requires `yt-dlp` to be installed. climp will show install instructions if it's missing.
+
 ## install
 
 ```bash
@@ -25,6 +35,7 @@ go build -o climp .
 
 ```bash
 climp song.mp3
+climp https://youtube.com/watch?v=...
 ```
 
 ## keybindings
@@ -36,6 +47,7 @@ climp song.mp3
 | right / l | seek +5s |
 | up / k | volume +5% |
 | down / j | volume -5% |
+| r | toggle repeat |
 | q / esc / ctrl+c | quit |
 
 ## license

@@ -148,7 +148,29 @@ func (p *Player) monitor() {
 
 // Done returns a channel that closes when playback finishes.
 func (p *Player) Done() <-chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.done
+}
+
+// Restart seeks to the beginning and resumes playback.
+// This resets the done channel so Done() can be used again.
+func (p *Player) Restart() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.decoder.Seek(0, io.SeekStart)
+	p.counter.SetPos(0)
+
+	p.otoPlayer.Pause()
+	p.otoPlayer = p.otoCtx.NewPlayer(p.counter)
+	p.otoPlayer.SetVolume(p.volume)
+
+	p.done = make(chan struct{})
+	p.paused = false
+	p.otoPlayer.Play()
+
+	go p.monitor()
 }
 
 // TogglePause toggles between play and pause.

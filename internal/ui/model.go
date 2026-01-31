@@ -11,14 +11,15 @@ import (
 
 // Model is the Bubbletea model for the climp TUI.
 type Model struct {
-	player   *player.Player
-	metadata player.Metadata
-	elapsed  time.Duration
-	duration time.Duration
-	volume   float64
-	paused   bool
-	width    int
-	quitting bool
+	player     *player.Player
+	metadata   player.Metadata
+	elapsed    time.Duration
+	duration   time.Duration
+	volume     float64
+	paused     bool
+	width      int
+	quitting   bool
+	repeatMode RepeatMode
 }
 
 // New creates a new Model.
@@ -65,6 +66,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			m.player.AdjustVolume(-0.05)
 			m.volume = m.player.Volume()
+		case "r":
+			m.repeatMode = m.repeatMode.Next()
+			return m, nil
 		}
 		return m, nil
 
@@ -75,6 +79,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case playbackEndedMsg:
+		if m.repeatMode == RepeatOne {
+			m.player.Restart()
+			m.elapsed = 0
+			return m, checkDone(m.player)
+		}
 		m.elapsed = m.duration
 		m.quitting = true
 		m.player.Close()
@@ -126,12 +135,17 @@ func (m Model) View() string {
 		statusIcon = "❚❚"
 		statusText = "paused"
 	}
+	repeatIcon := m.repeatMode.Icon()
 	volStr := renderVolumePercent(m.volume)
 
 	// Right-align volume
-	statusLeft := statusStyle.Render(fmt.Sprintf("%s  %s", statusIcon, statusText))
+	leftText := fmt.Sprintf("%s  %s", statusIcon, statusText)
+	if repeatIcon != "" {
+		leftText += "  " + repeatIcon
+	}
+	statusLeft := statusStyle.Render(leftText)
 	statusRight := statusStyle.Render(volStr)
-	gap := w - len(fmt.Sprintf("%s  %s", statusIcon, statusText)) - len(volStr) - 4
+	gap := w - len(leftText) - len(volStr) - 4
 	if gap < 2 {
 		gap = 2
 	}

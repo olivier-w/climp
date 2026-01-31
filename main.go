@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/olivier-w/climp/internal/downloader"
@@ -21,17 +24,49 @@ func main() {
 	arg := os.Args[1]
 
 	var path string
+	var meta player.Metadata
 	if downloader.IsURL(arg) {
-		fmt.Fprintf(os.Stderr, "Downloading...\n")
-		dlPath, cleanup, err := downloader.Download(arg, func(line string) {
-			fmt.Fprintf(os.Stderr, "%s\n", line)
+		var mu sync.Mutex
+		status := "Fetching info..."
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+			i := 0
+			for {
+				select {
+				case <-ctx.Done():
+					fmt.Fprintf(os.Stderr, "\033[2K\r")
+					return
+				default:
+					mu.Lock()
+					s := status
+					mu.Unlock()
+					fmt.Fprintf(os.Stderr, "\033[2K\r  %c %s", frames[i%len(frames)], s)
+					i++
+					time.Sleep(80 * time.Millisecond)
+				}
+			}
+		}()
+
+		dlPath, title, cleanup, err := downloader.Download(arg, func(s string) {
+			mu.Lock()
+			status = s
+			mu.Unlock()
 		})
+		cancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
 		defer cleanup()
 		path = dlPath
+
+		if title != "" {
+			meta = player.Metadata{Title: title}
+		} else {
+			meta = player.ReadMetadata(path)
+		}
 	} else {
 		path = arg
 
@@ -54,8 +89,10 @@ func main() {
 		}
 	}
 
-	// Read metadata
-	meta := player.ReadMetadata(path)
+	// Read metadata for local files
+	if !downloader.IsURL(arg) {
+		meta = player.ReadMetadata(path)
+	}
 
 	// Create audio player
 	p, err := player.New(path)

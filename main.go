@@ -85,7 +85,11 @@ func main() {
 	defer p.Close()
 
 	// Create and run TUI
-	model := ui.New(p, meta)
+	var sourcePath string
+	if downloader.IsURL(arg) {
+		sourcePath = path
+	}
+	model := ui.New(p, meta, sourcePath)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := program.Run(); err != nil {

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/olivier-w/climp/internal/downloader"
 	"github.com/olivier-w/climp/internal/player"
 	"github.com/olivier-w/climp/internal/util"
 )
@@ -20,15 +21,24 @@ type Model struct {
 	width      int
 	quitting   bool
 	repeatMode RepeatMode
+
+	sourcePath  string    // temp file path (empty for local files)
+	sourceTitle string    // title for saved filename
+	saveMsg     string    // transient status message
+	saveMsgTime time.Time // when saveMsg was set
+	saving      bool      // conversion in progress
 }
 
-// New creates a new Model.
-func New(p *player.Player, meta player.Metadata) Model {
+// New creates a new Model. sourcePath is the temp file path for URL downloads
+// (pass "" for local files to disable saving).
+func New(p *player.Player, meta player.Metadata, sourcePath string) Model {
 	return Model{
-		player:   p,
-		metadata: meta,
-		duration: p.Duration(),
-		volume:   p.Volume(),
+		player:      p,
+		metadata:    meta,
+		duration:    p.Duration(),
+		volume:      p.Volume(),
+		sourcePath:  sourcePath,
+		sourceTitle: meta.Title,
 	}
 }
 
@@ -69,13 +79,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			m.repeatMode = m.repeatMode.Next()
 			return m, nil
+		case "s":
+			if m.sourcePath != "" && !m.saving {
+				m.saving = true
+				m.saveMsg = "Saving..."
+				m.saveMsgTime = time.Now()
+				src, title := m.sourcePath, m.sourceTitle
+				return m, func() tea.Msg {
+					destName, err := downloader.SaveFile(src, title)
+					return fileSavedMsg{destName: destName, err: err}
+				}
+			}
+			return m, nil
 		}
+		return m, nil
+
+	case fileSavedMsg:
+		m.saving = false
+		if msg.err != nil {
+			m.saveMsg = fmt.Sprintf("Save failed: %v", msg.err)
+		} else {
+			m.saveMsg = fmt.Sprintf("Saved to %s", msg.destName)
+			m.sourcePath = ""
+		}
+		m.saveMsgTime = time.Now()
 		return m, nil
 
 	case tickMsg:
 		m.elapsed = m.player.Position()
 		m.volume = m.player.Volume()
 		m.paused = m.player.Paused()
+		if m.saveMsg != "" && time.Since(m.saveMsgTime) > 5*time.Second {
+			m.saveMsg = ""
+		}
 		return m, tickCmd()
 
 	case playbackEndedMsg:
@@ -151,7 +187,7 @@ func (m Model) View() string {
 	}
 	statusLine := fmt.Sprintf("%s%s%s", statusLeft, spaces(gap), statusRight)
 
-	help := helpStyle.Render(helpText())
+	help := helpStyle.Render(helpText(m.sourcePath != ""))
 
 	lines := "\n"
 	lines += "  " + header + "\n"
@@ -164,6 +200,9 @@ func (m Model) View() string {
 	lines += "  " + progressLine + "\n"
 	lines += "\n"
 	lines += "  " + statusLine + "\n"
+	if m.saveMsg != "" {
+		lines += "  " + helpStyle.Render(m.saveMsg) + "\n"
+	}
 	lines += "\n"
 	lines += "  " + help + "\n"
 

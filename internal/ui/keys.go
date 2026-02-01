@@ -10,6 +10,11 @@ func isQuit(msg tea.KeyMsg) bool {
 	return false
 }
 
-func helpText() string {
-	return "space pause  ←/→ seek  ↑/↓ volume  r repeat  q quit"
+func helpText(canSave bool) string {
+	s := "space pause  ←/→ seek  ↑/↓ volume  r repeat"
+	if canSave {
+		s += "  s save"
+	}
+	s += "  q quit"
+	return s
 }

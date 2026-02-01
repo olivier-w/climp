@@ -48,7 +48,7 @@ func NewDownload(url string) DownloadModel {
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#555555", Dark: "#AAAAAA"})
 
 	p := progress.New(
-		progress.WithGradient("#FF8C00", "#FFD700"),
+		progress.WithScaledGradient("#FF8C00", "#FF5F1F"),
 		progress.WithoutPercentage(),
 	)
 
@@ -123,11 +123,6 @@ func (m DownloadModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
-		return m, cmd
-
-	case progress.FrameMsg:
-		model, cmd := m.progress.Update(msg)
-		m.progress = model.(progress.Model)
 		return m, cmd
 
 	case tea.WindowSizeMsg:

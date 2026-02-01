@@ -2,10 +2,16 @@
 
 minimal cli media player.
 
-<img width="674" height="230" alt="image" src="https://github.com/user-attachments/assets/f9e49654-36d9-4518-830d-5cabf4c415fa" />
+![playback demo](demo/playback.gif)
 
 # format support
 .mp3, .wav, .flac, .ogg
+
+## file browser
+
+Run `climp` with no arguments to browse and select files interactively.
+
+![file browser demo](demo/browser.gif)
 
 ## url support
 
@@ -16,6 +22,8 @@ climp https://youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
 Requires `yt-dlp` to be installed. climp will show install instructions if it's missing. Downloads as WAV for faster processing — press `s` during playback to save as MP3 (requires `ffmpeg`).
+
+![url playback demo](demo/url.gif)
 
 ## install
 

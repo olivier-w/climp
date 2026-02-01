@@ -13,12 +13,25 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: climp <file.mp3|.wav|.flac|.ogg>\n")
-		os.Exit(1)
-	}
+	var arg string
 
-	arg := os.Args[1]
+	if len(os.Args) < 2 {
+		browser := ui.NewBrowser()
+		p := tea.NewProgram(browser, tea.WithAltScreen())
+		finalModel, err := p.Run()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+		result := finalModel.(ui.BrowserModel).Result()
+		if result.Cancelled {
+			os.Exit(0)
+		}
+		arg = result.Path
+	} else {
+		arg = os.Args[1]
+	}
 
 	var path string
 	var meta player.Metadata

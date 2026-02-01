@@ -7,14 +7,6 @@ import (
 	"time"
 
 	"github.com/ebitengine/oto/v3"
-	"github.com/hajimehoshi/go-mp3"
-)
-
-const (
-	sampleRate   = 44100
-	channelCount = 2
-	bitDepth     = 2 // 16-bit = 2 bytes
-	bytesPerSec  = sampleRate * channelCount * bitDepth
 )
 
 // countingReader wraps an io.Reader and tracks bytes read.
@@ -44,28 +36,29 @@ func (cr *countingReader) SetPos(pos int64) {
 	cr.mu.Unlock()
 }
 
-// Player manages MP3 audio playback.
+// Player manages audio playback.
 type Player struct {
-	file     *os.File
-	decoder  *mp3.Decoder
-	counter  *countingReader
-	otoCtx   *oto.Context
-	otoPlayer *oto.Player
-	duration time.Duration
-	volume   float64
-	paused   bool
-	done     chan struct{}
-	mu       sync.Mutex
-	closed   bool
+	file        *os.File
+	decoder     audioDecoder
+	counter     *countingReader
+	otoCtx      *oto.Context
+	otoPlayer   *oto.Player
+	duration    time.Duration
+	volume      float64
+	paused      bool
+	done        chan struct{}
+	mu          sync.Mutex
+	closed      bool
+	bytesPerSec int
 }
 
 var (
-	globalOtoCtx  *oto.Context
-	otoOnce       sync.Once
-	otoInitErr    error
+	globalOtoCtx *oto.Context
+	otoOnce      sync.Once
+	otoInitErr   error
 )
 
-func initOto() (*oto.Context, error) {
+func initOto(sampleRate, channelCount int) (*oto.Context, error) {
 	otoOnce.Do(func() {
 		op := &oto.NewContextOptions{
 			SampleRate:   sampleRate,
@@ -81,38 +74,40 @@ func initOto() (*oto.Context, error) {
 	return globalOtoCtx, otoInitErr
 }
 
-// New creates a new Player for the given MP3 file path.
+// New creates a new Player for the given audio file path.
 func New(path string) (*Player, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 
-	dec, err := mp3.NewDecoder(f)
+	dec, err := newDecoder(f)
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
 
-	ctx, err := initOto()
+	ctx, err := initOto(dec.SampleRate(), dec.ChannelCount())
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
 
+	bytesPerSec := dec.SampleRate() * dec.ChannelCount() * 2 // 16-bit = 2 bytes
 	totalBytes := dec.Length()
 	dur := time.Duration(float64(totalBytes) / float64(bytesPerSec) * float64(time.Second))
 
 	cr := &countingReader{reader: dec}
 
 	p := &Player{
-		file:     f,
-		decoder:  dec,
-		counter:  cr,
-		otoCtx:   ctx,
-		duration: dur,
-		volume:   0.8,
-		done:     make(chan struct{}),
+		file:        f,
+		decoder:     dec,
+		counter:     cr,
+		otoCtx:      ctx,
+		duration:    dur,
+		volume:      0.8,
+		done:        make(chan struct{}),
+		bytesPerSec: bytesPerSec,
 	}
 
 	p.otoPlayer = ctx.NewPlayer(cr)
@@ -197,7 +192,7 @@ func (p *Player) Paused() bool {
 // Position returns the current playback position.
 func (p *Player) Position() time.Duration {
 	pos := p.counter.Pos()
-	secs := float64(pos) / float64(bytesPerSec)
+	secs := float64(pos) / float64(p.bytesPerSec)
 	return time.Duration(secs * float64(time.Second))
 }
 
@@ -212,7 +207,7 @@ func (p *Player) Seek(delta time.Duration) {
 	defer p.mu.Unlock()
 
 	currentPos := p.counter.Pos()
-	deltaBytes := int64(delta.Seconds() * float64(bytesPerSec))
+	deltaBytes := int64(delta.Seconds() * float64(p.bytesPerSec))
 	newPos := currentPos + deltaBytes
 
 	// Clamp to valid range
@@ -224,8 +219,9 @@ func (p *Player) Seek(delta time.Duration) {
 		newPos = totalBytes
 	}
 
-	// Align to frame boundary (4 bytes per sample frame: 2 channels * 2 bytes)
-	newPos = newPos - (newPos % 4)
+	// Align to frame boundary (channels * 2 bytes per sample)
+	frameSize := int64(p.decoder.ChannelCount()) * 2
+	newPos = newPos - (newPos % frameSize)
 
 	// Seek the decoder
 	if _, err := p.decoder.Seek(newPos, io.SeekStart); err != nil {

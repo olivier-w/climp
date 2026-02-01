@@ -14,25 +14,28 @@ type Metadata struct {
 	Album  string
 }
 
-// ReadMetadata reads ID3v2 tags from an MP3 file, falling back to filename.
+// ReadMetadata reads tags from an audio file, falling back to filename.
+// ID3v2 tags are only read for MP3 files.
 func ReadMetadata(path string) Metadata {
-	tag, err := id3v2.Open(path, id3v2.Options{Parse: true})
-	if err == nil {
-		defer tag.Close()
-		m := Metadata{
-			Title:  strings.TrimSpace(tag.Title()),
-			Artist: strings.TrimSpace(tag.Artist()),
-			Album:  strings.TrimSpace(tag.Album()),
-		}
-		if m.Title != "" {
-			return m
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".mp3" {
+		tag, err := id3v2.Open(path, id3v2.Options{Parse: true})
+		if err == nil {
+			defer tag.Close()
+			m := Metadata{
+				Title:  strings.TrimSpace(tag.Title()),
+				Artist: strings.TrimSpace(tag.Artist()),
+				Album:  strings.TrimSpace(tag.Album()),
+			}
+			if m.Title != "" {
+				return m
+			}
 		}
 	}
 
 	// Fallback: use filename without extension
 	base := filepath.Base(path)
-	ext := filepath.Ext(base)
-	name := strings.TrimSuffix(base, ext)
+	name := strings.TrimSuffix(base, filepath.Ext(base))
 
 	return Metadata{
 		Title: name,

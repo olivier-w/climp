@@ -17,7 +17,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: climp <file.mp3>\n")
+		fmt.Fprintf(os.Stderr, "Usage: climp <file.mp3|.wav|.flac|.ogg>\n")
 		os.Exit(1)
 	}
 
@@ -83,8 +83,11 @@ func main() {
 
 		// Check extension
 		ext := strings.ToLower(filepath.Ext(path))
-		if ext != ".mp3" {
-			fmt.Fprintf(os.Stderr, "Error: only .mp3 files are supported (got %s)\n", ext)
+		switch ext {
+		case ".mp3", ".wav", ".flac", ".ogg":
+			// supported
+		default:
+			fmt.Fprintf(os.Stderr, "Error: unsupported format %s (supported: .mp3, .wav, .flac, .ogg)\n", ext)
 			os.Exit(1)
 		}
 	}

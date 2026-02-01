@@ -22,7 +22,7 @@ func Download(url string, onStatus func(string)) (string, string, func(), error)
 		return "", "", nil, fmt.Errorf("yt-dlp not found. Install it:\n  Windows: winget install yt-dlp\n  macOS:   brew install yt-dlp\n  Linux:   sudo apt install yt-dlp  (or pip install yt-dlp)")
 	}
 
-	tmpFile, err := os.CreateTemp("", "climp-*.mp3")
+	tmpFile, err := os.CreateTemp("", "climp-*.wav")
 	if err != nil {
 		return "", "", nil, fmt.Errorf("creating temp file: %w", err)
 	}
@@ -41,7 +41,7 @@ func Download(url string, onStatus func(string)) (string, string, func(), error)
 	}
 
 	// Download audio
-	cmd := exec.Command(ytdlp, "-x", "--audio-format", "mp3", "-o", tmpPath, "--force-overwrite", url)
+	cmd := exec.Command(ytdlp, "-x", "--audio-format", "wav", "-o", tmpPath, "--force-overwrite", url)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cleanup()
@@ -66,7 +66,7 @@ func Download(url string, onStatus func(string)) (string, string, func(), error)
 		case strings.Contains(line, "[download]") && strings.Contains(line, "%"):
 			phase = "Downloading..."
 		case strings.Contains(line, "ExtractAudio"):
-			phase = "Converting to MP3..."
+			phase = "Converting..."
 		}
 		if phase != "" && phase != lastPhase && onStatus != nil {
 			lastPhase = phase

@@ -13,5 +13,9 @@ func Modes() []Visualizer {
 		NewVUMeter(),
 		NewSpectrum(),
 		NewWaveform(),
+		NewBraille(),
+		NewDense(),
+		NewMatrix(),
+		NewHatching(),
 	}
 }

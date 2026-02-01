@@ -103,16 +103,28 @@ func (v *VUMeter) Update(samples []int16, width, height int) {
 	v.output = sb.String()
 }
 
-func renderVUBar(rms, peak float64, width int) string {
-	// Scale: RMS of 0.5 = full bar (most music won't exceed this)
-	level := rms * 2.0
+// rmsToLevel converts an RMS value to a 0.0–1.0 bar level using a
+// logarithmic (dB) scale. This compresses the dynamic range so bass-heavy
+// tracks don't constantly peg the meter at max.
+func rmsToLevel(rms float64) float64 {
+	const dbFloor = -40.0 // silence threshold
+	if rms < 1e-6 {
+		return 0
+	}
+	db := 20.0 * math.Log10(rms)
+	if db < dbFloor {
+		return 0
+	}
+	level := (db - dbFloor) / -dbFloor
 	if level > 1.0 {
 		level = 1.0
 	}
-	peakLevel := peak * 2.0
-	if peakLevel > 1.0 {
-		peakLevel = 1.0
-	}
+	return level
+}
+
+func renderVUBar(rms, peak float64, width int) string {
+	level := rmsToLevel(rms)
+	peakLevel := rmsToLevel(peak)
 
 	filled := int(level * float64(width))
 	peakPos := int(peakLevel * float64(width))

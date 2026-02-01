@@ -15,7 +15,7 @@ Set Padding 20
 Set TypingSpeed 50ms
 
 Sleep 500ms
-Type ".\climp.exe '.\sienna.mp3'"
+Type "climp sienna-sleep.mp3"
 Enter
 Sleep 5s
 
@@ -29,4 +29,16 @@ Type "v"
 Sleep 3s
 
 Type "v"
-Sleep 5s
+Sleep 3s
+
+Type "v"
+Sleep 3s
+
+Type "v"
+Sleep 3s
+
+Type "v"
+Sleep 3s
+
+Type "v"
+Sleep 3s

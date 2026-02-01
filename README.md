@@ -23,7 +23,7 @@ climp https://youtube.com/watch?v=dQw4w9WgXcQ
 
 Requires `yt-dlp` to be installed. climp will show install instructions if it's missing. Downloads as WAV for faster processing — press `s` during playback to save as MP3 (requires `ffmpeg`).
 
-![url playback demo](demo/url.gif)
+![url playback demo](demo/url-fixed.gif)
 
 ## visualizer
 

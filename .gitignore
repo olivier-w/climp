@@ -30,3 +30,6 @@ Thumbs.db
 
 # Distribution
 dist/
+
+# Internal docs
+docs/

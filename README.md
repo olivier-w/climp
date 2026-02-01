@@ -4,8 +4,8 @@ minimal cli media player.
 
 <img width="674" height="230" alt="image" src="https://github.com/user-attachments/assets/f9e49654-36d9-4518-830d-5cabf4c415fa" />
 
-# file support
-.mp3
+# format support
+.mp3, .wav, .flac, .ogg
 
 ## url support
 
@@ -15,7 +15,7 @@ Play audio from URLs using [yt-dlp](https://github.com/yt-dlp/yt-dlp):
 climp https://youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
-Requires `yt-dlp` to be installed. climp will show install instructions if it's missing.
+Requires `yt-dlp` to be installed. climp will show install instructions if it's missing. Downloads as WAV for faster processing — press `s` during playback to save as MP3 (requires `ffmpeg`).
 
 ## install
 
@@ -35,6 +35,7 @@ go build -o climp .
 
 ```bash
 climp song.mp3
+climp track.flac
 climp https://youtube.com/watch?v=...
 ```
 
@@ -48,6 +49,7 @@ climp https://youtube.com/watch?v=...
 | up / k | volume +5% |
 | down / j | volume -5% |
 | r | toggle repeat |
+| s | save as mp3 (url playback only) |
 | q / esc / ctrl+c | quit |
 
 ## license

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -22,37 +23,52 @@ func Download(url string, onStatus func(string)) (string, string, func(), error)
 		return "", "", nil, fmt.Errorf("yt-dlp not found. Install it:\n  Windows: winget install yt-dlp\n  macOS:   brew install yt-dlp\n  Linux:   sudo apt install yt-dlp  (or pip install yt-dlp)")
 	}
 
-	tmpFile, err := os.CreateTemp("", "climp-*.wav")
+	tmpDir, err := os.MkdirTemp("", "climp-*")
 	if err != nil {
-		return "", "", nil, fmt.Errorf("creating temp file: %w", err)
+		return "", "", nil, fmt.Errorf("creating temp dir: %w", err)
 	}
-	tmpPath := tmpFile.Name()
-	tmpFile.Close()
 
 	cleanup := func() {
-		os.Remove(tmpPath)
+		os.RemoveAll(tmpDir)
 	}
 
-	// Fetch title with a quick metadata-only call
-	var title string
-	titleCmd := exec.Command(ytdlp, "--skip-download", "--print", "title", url)
-	if titleOut, err := titleCmd.Output(); err == nil {
-		title = strings.TrimSpace(string(titleOut))
-	}
-
-	// Download audio
-	cmd := exec.Command(ytdlp, "-x", "--audio-format", "wav", "-o", tmpPath, "--force-overwrite", url)
+	// Use a fixed output template inside our temp dir.
+	// --print outputs title then final filepath to stdout (one per line).
+	outTemplate := filepath.Join(tmpDir, "audio.%(ext)s")
+	cmd := exec.Command(ytdlp,
+		"-x", "--audio-format", "wav",
+		"--print", "title",
+		"--print", "after_move:filepath",
+		"-o", outTemplate,
+		url,
+	)
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cleanup()
 		return "", "", nil, fmt.Errorf("setting up yt-dlp: %w", err)
 	}
-	cmd.Stdout = cmd.Stderr // merge stdout into stderr pipe
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		cleanup()
+		return "", "", nil, fmt.Errorf("setting up yt-dlp: %w", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		cleanup()
 		return "", "", nil, fmt.Errorf("starting yt-dlp: %w", err)
 	}
+
+	// Read title and final filepath from stdout
+	var title, finalPath string
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		if scanner.Scan() {
+			title = strings.TrimSpace(scanner.Text())
+		}
+		if scanner.Scan() {
+			finalPath = strings.TrimSpace(scanner.Text())
+		}
+	}()
 
 	// Parse stderr for phase detection
 	lastPhase := ""
@@ -79,5 +95,10 @@ func Download(url string, onStatus func(string)) (string, string, func(), error)
 		return "", "", nil, fmt.Errorf("yt-dlp failed: %w", err)
 	}
 
-	return tmpPath, title, cleanup, nil
+	if finalPath == "" {
+		cleanup()
+		return "", "", nil, fmt.Errorf("yt-dlp did not produce an output file")
+	}
+
+	return finalPath, title, cleanup, nil
 }

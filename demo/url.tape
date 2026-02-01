@@ -21,4 +21,4 @@ Enter
 Sleep 11s
 
 Type "s"
-Sleep 5s
+Sleep 7s

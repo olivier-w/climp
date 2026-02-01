@@ -6,7 +6,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
+)
+
+// DownloadStatus represents the current state of a download.
+type DownloadStatus struct {
+	Phase     string  // "fetching", "downloading", "converting"
+	Percent   float64 // 0.0-1.0, or -1 if indeterminate
+	TotalSize string  // e.g. "4.53MiB"
+	Speed     string  // e.g. "1.23MiB/s"
+	ETA       string  // e.g. "00:03"
+}
+
+var downloadLineRe = regexp.MustCompile(
+	`\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\S+)\s+at\s+([\d.]+\S+)\s+ETA\s+(\S+)`,
 )
 
 // IsURL returns true if the argument looks like a URL.
@@ -14,10 +29,10 @@ func IsURL(arg string) bool {
 	return strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://")
 }
 
-// Download uses yt-dlp to download audio from a URL as MP3.
-// onStatus is called with a clean phase description when the phase changes.
+// Download uses yt-dlp to download audio from a URL as WAV.
+// onStatus is called with structured progress data as it becomes available.
 // Returns the path to the temp file, the video title, and a cleanup function.
-func Download(url string, onStatus func(string)) (string, string, func(), error) {
+func Download(url string, onStatus func(DownloadStatus)) (string, string, func(), error) {
 	ytdlp, err := exec.LookPath("yt-dlp")
 	if err != nil {
 		return "", "", nil, fmt.Errorf("yt-dlp not found. Install it:\n  Windows: winget install yt-dlp\n  macOS:   brew install yt-dlp\n  Linux:   sudo apt install yt-dlp  (or pip install yt-dlp)")
@@ -37,6 +52,8 @@ func Download(url string, onStatus func(string)) (string, string, func(), error)
 	outTemplate := filepath.Join(tmpDir, "audio.%(ext)s")
 	cmd := exec.Command(ytdlp,
 		"-x", "--audio-format", "wav",
+		"--newline",  // print progress on new lines instead of \r (needed when piped)
+		"--progress", // force progress output even when not connected to a TTY
 		"--print", "title",
 		"--print", "after_move:filepath",
 		"-o", outTemplate,
@@ -58,35 +75,58 @@ func Download(url string, onStatus func(string)) (string, string, func(), error)
 		return "", "", nil, fmt.Errorf("starting yt-dlp: %w", err)
 	}
 
-	// Read title and final filepath from stdout
+	// Read title and final filepath from stdout, and parse progress lines.
+	// With --print and --newline, yt-dlp sends title, [download] progress lines,
+	// final filepath, and possibly more [download] lines all to stdout.
 	var title, finalPath string
+	titleRead := false
+
+	// Drain stderr in background (phase info like "Extracting", "ExtractAudio")
 	go func() {
-		scanner := bufio.NewScanner(stdout)
-		if scanner.Scan() {
-			title = strings.TrimSpace(scanner.Text())
-		}
-		if scanner.Scan() {
-			finalPath = strings.TrimSpace(scanner.Text())
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			line := scanner.Text()
+			switch {
+			case strings.Contains(line, "Extracting") || strings.Contains(line, "Downloading webpage"):
+				if onStatus != nil {
+					onStatus(DownloadStatus{Phase: "fetching", Percent: -1})
+				}
+			case strings.Contains(line, "ExtractAudio"):
+				if onStatus != nil {
+					onStatus(DownloadStatus{Phase: "converting", Percent: -1})
+				}
+			}
 		}
 	}()
 
-	// Parse stderr for phase detection
-	lastPhase := ""
-	scanner := bufio.NewScanner(stderr)
+	// Parse stdout for title, download progress, and final filepath.
+	scanner := bufio.NewScanner(stdout)
+	scanner.Split(scanCRLF)
 	for scanner.Scan() {
-		line := scanner.Text()
-		phase := ""
-		switch {
-		case strings.Contains(line, "Extracting") || strings.Contains(line, "Downloading webpage"):
-			phase = "Fetching info..."
-		case strings.Contains(line, "[download]") && strings.Contains(line, "%"):
-			phase = "Downloading..."
-		case strings.Contains(line, "ExtractAudio"):
-			phase = "Converting..."
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
 		}
-		if phase != "" && phase != lastPhase && onStatus != nil {
-			lastPhase = phase
-			onStatus(phase)
+
+		if strings.Contains(line, "[download]") && strings.Contains(line, "%") {
+			if onStatus != nil {
+				status := DownloadStatus{Phase: "downloading", Percent: -1}
+				if m := downloadLineRe.FindStringSubmatch(line); m != nil {
+					if pct, err := strconv.ParseFloat(m[1], 64); err == nil {
+						status.Percent = pct / 100.0
+					}
+					status.TotalSize = m[2]
+					status.Speed = m[3]
+					status.ETA = m[4]
+				}
+				onStatus(status)
+			}
+		} else if !titleRead {
+			title = line
+			titleRead = true
+		} else {
+			// Last non-download line is the filepath from --print after_move:filepath
+			finalPath = line
 		}
 	}
 
@@ -101,4 +141,28 @@ func Download(url string, onStatus func(string)) (string, string, func(), error)
 	}
 
 	return finalPath, title, cleanup, nil
+}
+
+// scanCRLF is a bufio.SplitFunc that splits on \n, \r\n, or \r.
+// This is needed because yt-dlp uses \r to overwrite progress lines in place.
+func scanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	for i, b := range data {
+		if b == '\n' {
+			return i + 1, data[:i], nil
+		}
+		if b == '\r' {
+			// \r\n counts as one line break
+			if i+1 < len(data) && data[i+1] == '\n' {
+				return i + 2, data[:i], nil
+			}
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }

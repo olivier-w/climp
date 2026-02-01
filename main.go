@@ -1,13 +1,10 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/olivier-w/climp/internal/downloader"
@@ -26,44 +23,26 @@ func main() {
 	var path string
 	var meta player.Metadata
 	if downloader.IsURL(arg) {
-		var mu sync.Mutex
-		status := "Fetching info..."
-
-		ctx, cancel := context.WithCancel(context.Background())
-		go func() {
-			frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
-			i := 0
-			for {
-				select {
-				case <-ctx.Done():
-					fmt.Fprintf(os.Stderr, "\033[2K\r")
-					return
-				default:
-					mu.Lock()
-					s := status
-					mu.Unlock()
-					fmt.Fprintf(os.Stderr, "\033[2K\r  %c %s", frames[i%len(frames)], s)
-					i++
-					time.Sleep(80 * time.Millisecond)
-				}
-			}
-		}()
-
-		dlPath, title, cleanup, err := downloader.Download(arg, func(s string) {
-			mu.Lock()
-			status = s
-			mu.Unlock()
-		})
-		cancel()
+		dlModel := ui.NewDownload(arg)
+		dlProgram := tea.NewProgram(dlModel, tea.WithAltScreen())
+		finalModel, err := dlProgram.Run()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		defer cleanup()
-		path = dlPath
 
-		if title != "" {
-			meta = player.Metadata{Title: title}
+		result := finalModel.(ui.DownloadModel).Result()
+		if result.Err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
+			os.Exit(1)
+		}
+		if result.Cleanup != nil {
+			defer result.Cleanup()
+		}
+		path = result.Path
+
+		if result.Title != "" {
+			meta = player.Metadata{Title: result.Title}
 		} else {
 			meta = player.ReadMetadata(path)
 		}

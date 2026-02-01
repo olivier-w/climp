@@ -52,8 +52,9 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 	outTemplate := filepath.Join(tmpDir, "audio.%(ext)s")
 	cmd := exec.Command(ytdlp,
 		"-x", "--audio-format", "wav",
-		"--newline",  // print progress on new lines instead of \r (needed when piped)
-		"--progress", // force progress output even when not connected to a TTY
+		"--no-playlist", // only download the single video, even if URL is a playlist
+		"--newline",     // print progress on new lines instead of \r (needed when piped)
+		"--progress",    // force progress output even when not connected to a TTY
 		"--print", "title",
 		"--print", "after_move:filepath",
 		"-o", outTemplate,
@@ -141,6 +142,74 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 	}
 
 	return finalPath, title, cleanup, nil
+}
+
+// PlaylistEntry represents a single video in a playlist.
+type PlaylistEntry struct {
+	ID    string
+	Title string
+}
+
+// VideoURL returns a YouTube watch URL for the given video ID.
+func VideoURL(id string) string {
+	return "https://www.youtube.com/watch?v=" + id
+}
+
+// ExtractPlaylist runs yt-dlp --flat-playlist to extract video IDs and titles.
+// Returns nil, nil if the URL is a single video (0 or 1 entries).
+// Caps at 50 entries.
+func ExtractPlaylist(url string) ([]PlaylistEntry, error) {
+	ytdlp, err := exec.LookPath("yt-dlp")
+	if err != nil {
+		return nil, fmt.Errorf("yt-dlp not found")
+	}
+
+	cmd := exec.Command(ytdlp,
+		"--flat-playlist",
+		"--print", "id",
+		"--print", "title",
+		"--playlist-end", "50",
+		url,
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("yt-dlp playlist extraction failed: %w", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	// Clean up \r from line endings
+	for i := range lines {
+		lines[i] = strings.TrimSpace(lines[i])
+	}
+
+	// Remove empty lines
+	var cleaned []string
+	for _, l := range lines {
+		if l != "" {
+			cleaned = append(cleaned, l)
+		}
+	}
+	lines = cleaned
+
+	// Lines come in pairs: id, title, id, title...
+	if len(lines) < 2 {
+		return nil, nil // single video, not a playlist
+	}
+
+	var entries []PlaylistEntry
+	for i := 0; i+1 < len(lines); i += 2 {
+		entries = append(entries, PlaylistEntry{
+			ID:    lines[i],
+			Title: lines[i+1],
+		})
+	}
+
+	if len(entries) <= 1 {
+		return nil, nil // single video
+	}
+
+	return entries, nil
 }
 
 // scanCRLF is a bufio.SplitFunc that splits on \n, \r\n, or \r.

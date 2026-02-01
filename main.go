@@ -36,6 +36,8 @@ func main() {
 	var path string
 	var meta player.Metadata
 	if downloader.IsURL(arg) {
+		// Download the first video immediately (--no-playlist ensures only one).
+		// Playlist extraction happens in the background once playback starts.
 		dlModel := ui.NewDownload(arg)
 		dlProgram := tea.NewProgram(dlModel, tea.WithAltScreen())
 		finalModel, err := dlProgram.Run()
@@ -98,11 +100,12 @@ func main() {
 	defer p.Close()
 
 	// Create and run TUI
-	var sourcePath string
+	var sourcePath, originalURL string
 	if downloader.IsURL(arg) {
 		sourcePath = path
+		originalURL = arg
 	}
-	model := ui.New(p, meta, sourcePath)
+	model := ui.New(p, meta, sourcePath, originalURL)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := program.Run(); err != nil {
@@ -110,3 +113,4 @@ func main() {
 		os.Exit(1)
 	}
 }
+

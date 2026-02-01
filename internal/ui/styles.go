@@ -22,4 +22,10 @@ var (
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.AdaptiveColor{Light: "#555555", Dark: "#888888"})
+
+	activeDotStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.AdaptiveColor{Light: "#847A85", Dark: "#979797"})
+
+	inactiveDotStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.AdaptiveColor{Light: "#DDDADA", Dark: "#3C3C3C"})
 )

@@ -10,8 +10,11 @@ func isQuit(msg tea.KeyMsg) bool {
 	return false
 }
 
-func helpText(canSave bool) string {
-	s := "space pause  ←/→ seek  ↑/↓ volume  v viz  r repeat"
+func helpText(canSave bool, hasQueue bool) string {
+	s := "space pause  ←/→ seek  +/- volume  v viz  r repeat"
+	if hasQueue {
+		s += "  n/p track  j/k scroll"
+	}
 	if canSave {
 		s += "  s save"
 	}

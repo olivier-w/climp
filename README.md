@@ -27,11 +27,20 @@ Requires `yt-dlp` to be installed. climp will show install instructions if it's 
 
 ## install
 
+### scoop (windows)
+
+```powershell
+scoop bucket add climp https://github.com/olivier-w/scoop-bucket
+scoop install climp
+```
+
+### go install
+
 ```bash
 go install github.com/olivier-w/climp@latest
 ```
 
-or build from source:
+### build from source
 
 ```bash
 git clone https://github.com/olivier-w/climp.git

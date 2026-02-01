@@ -58,7 +58,7 @@ func (d *mp3Decoder) Seek(offset int64, whence int) (int64, error) {
 	return d.dec.Seek(offset, whence)
 }
 func (d *mp3Decoder) Length() int64    { return d.dec.Length() }
-func (d *mp3Decoder) SampleRate() int  { return 44100 }
+func (d *mp3Decoder) SampleRate() int  { return d.dec.SampleRate() }
 func (d *mp3Decoder) ChannelCount() int { return 2 }
 
 // --- WAV decoder ---

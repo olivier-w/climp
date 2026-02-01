@@ -1,19 +1,23 @@
 package player
 
 import (
+	"encoding/binary"
 	"io"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/ebitengine/oto/v3"
+	"github.com/olivier-w/climp/internal/visualizer"
 )
 
 // countingReader wraps an io.Reader and tracks bytes read.
+// It also copies PCM data into a ring buffer for visualization.
 type countingReader struct {
-	reader io.ReadSeeker
-	pos    int64
-	mu     sync.Mutex
+	reader    io.ReadSeeker
+	pos       int64
+	mu        sync.Mutex
+	sampleBuf *visualizer.RingBuffer
 }
 
 func (cr *countingReader) Read(p []byte) (int, error) {
@@ -21,6 +25,9 @@ func (cr *countingReader) Read(p []byte) (int, error) {
 	cr.mu.Lock()
 	cr.pos += int64(n)
 	cr.mu.Unlock()
+	if n > 0 && cr.sampleBuf != nil {
+		cr.sampleBuf.Write(p[:n])
+	}
 	return n, err
 }
 
@@ -50,6 +57,7 @@ type Player struct {
 	mu          sync.Mutex
 	closed      bool
 	bytesPerSec int
+	sampleBuf   *visualizer.RingBuffer
 }
 
 var (
@@ -97,7 +105,9 @@ func New(path string) (*Player, error) {
 	totalBytes := dec.Length()
 	dur := time.Duration(float64(totalBytes) / float64(bytesPerSec) * float64(time.Second))
 
-	cr := &countingReader{reader: dec}
+	// ~90ms at 44100Hz stereo 16-bit = 44100 * 2 * 2 * 0.09 ≈ 16KB
+	sampleBuf := visualizer.NewRingBuffer(16384)
+	cr := &countingReader{reader: dec, sampleBuf: sampleBuf}
 
 	p := &Player{
 		file:        f,
@@ -108,6 +118,7 @@ func New(path string) (*Player, error) {
 		volume:      0.8,
 		done:        make(chan struct{}),
 		bytesPerSec: bytesPerSec,
+		sampleBuf:   sampleBuf,
 	}
 
 	p.otoPlayer = ctx.NewPlayer(cr)
@@ -156,6 +167,9 @@ func (p *Player) Restart() {
 
 	p.decoder.Seek(0, io.SeekStart)
 	p.counter.SetPos(0)
+	if p.sampleBuf != nil {
+		p.sampleBuf.Clear()
+	}
 
 	p.otoPlayer.Pause()
 	p.otoPlayer = p.otoCtx.NewPlayer(p.counter)
@@ -223,15 +237,24 @@ func (p *Player) Seek(delta time.Duration) {
 	frameSize := int64(p.decoder.ChannelCount()) * 2
 	newPos = newPos - (newPos % frameSize)
 
-	// Seek the decoder
+	// Pause Oto BEFORE seeking to stop concurrent reads on the decoder
+	wasPaused := p.paused
+	p.otoPlayer.Pause()
+
+	// Seek the decoder (safe now that Oto is paused)
 	if _, err := p.decoder.Seek(newPos, io.SeekStart); err != nil {
+		// Resume if seek failed
+		if !wasPaused {
+			p.otoPlayer.Play()
+		}
 		return
 	}
 	p.counter.SetPos(newPos)
+	if p.sampleBuf != nil {
+		p.sampleBuf.Clear()
+	}
 
 	// Recreate the Oto player to flush buffers
-	wasPaused := p.paused
-	p.otoPlayer.Pause()
 	p.otoPlayer = p.otoCtx.NewPlayer(p.counter)
 	p.otoPlayer.SetVolume(p.volume)
 	if !wasPaused {
@@ -267,6 +290,24 @@ func (p *Player) AdjustVolume(delta float64) {
 	v := p.volume + delta
 	p.mu.Unlock()
 	p.SetVolume(v) // SetVolume handles clamping
+}
+
+// Samples returns the most recent n int16 samples from the audio stream.
+// Returns interleaved stereo samples (left, right, left, right, ...).
+func (p *Player) Samples(n int) []int16 {
+	if p.sampleBuf == nil {
+		return nil
+	}
+	// Each int16 sample = 2 bytes
+	raw := p.sampleBuf.Read(n * 2)
+	if len(raw) < 2 {
+		return nil
+	}
+	samples := make([]int16, len(raw)/2)
+	for i := range samples {
+		samples[i] = int16(binary.LittleEndian.Uint16(raw[i*2 : i*2+2]))
+	}
+	return samples
 }
 
 // Close releases all resources.

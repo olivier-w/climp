@@ -25,6 +25,12 @@ Requires `yt-dlp` to be installed. climp will show install instructions if it's 
 
 ![url playback demo](demo/url.gif)
 
+## visualizer
+
+Press `v` to cycle through audio-reactive visualizers: VU meter, spectrum, and waveform.
+
+![visualizer demo](demo/visualizer.gif)
+
 ## install
 
 ### scoop (windows)
@@ -65,6 +71,7 @@ climp https://youtube.com/watch?v=...
 | right / l | seek +5s |
 | up / k | volume +5% |
 | down / j | volume -5% |
+| v | cycle visualizer (vu / spectrum / waveform / off) |
 | r | toggle repeat |
 | s | save as mp3 (url playback only) |
 | q / esc / ctrl+c | quit |

@@ -2,12 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/olivier-w/climp/internal/downloader"
 	"github.com/olivier-w/climp/internal/player"
 	"github.com/olivier-w/climp/internal/util"
+	"github.com/olivier-w/climp/internal/visualizer"
 )
 
 // Model is the Bubbletea model for the climp TUI.
@@ -19,6 +21,7 @@ type Model struct {
 	volume     float64
 	paused     bool
 	width      int
+	height     int
 	quitting   bool
 	repeatMode RepeatMode
 
@@ -27,6 +30,10 @@ type Model struct {
 	saveMsg     string    // transient status message
 	saveMsgTime time.Time // when saveMsg was set
 	saving      bool      // conversion in progress
+
+	visualizers []visualizer.Visualizer
+	vizIndex    int
+	vizEnabled  bool
 }
 
 // New creates a new Model. sourcePath is the temp file path for URL downloads
@@ -39,6 +46,7 @@ func New(p *player.Player, meta player.Metadata, sourcePath string) Model {
 		volume:      p.Volume(),
 		sourcePath:  sourcePath,
 		sourceTitle: meta.Title,
+		visualizers: visualizer.Modes(),
 	}
 }
 
@@ -79,6 +87,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			m.repeatMode = m.repeatMode.Next()
 			return m, nil
+		case "v":
+			if !m.vizEnabled {
+				// First press: enable with first visualizer
+				m.vizEnabled = true
+				m.vizIndex = 0
+				return m, vizTickCmd()
+			}
+			// Cycle through modes, then off
+			m.vizIndex++
+			if m.vizIndex >= len(m.visualizers) {
+				m.vizEnabled = false
+				m.vizIndex = 0
+			}
+			return m, nil
 		case "s":
 			if m.sourcePath != "" && !m.saving {
 				m.saving = true
@@ -114,6 +136,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tickCmd()
 
+	case vizTickMsg:
+		if m.vizEnabled && m.vizIndex < len(m.visualizers) {
+			samples := m.player.Samples(2048)
+			vizHeight := m.vizHeight()
+			m.visualizers[m.vizIndex].Update(samples, m.effectiveWidth(), vizHeight)
+			return m, vizTickCmd()
+		}
+		return m, nil
+
 	case playbackEndedMsg:
 		if m.repeatMode == RepeatOne {
 			m.player.Restart()
@@ -127,10 +158,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		return m, nil
 	}
 
 	return m, nil
+}
+
+func (m Model) effectiveWidth() int {
+	w := m.width
+	if w < 30 {
+		w = 50
+	}
+	return w - 4 // account for left margin
+}
+
+func (m Model) vizHeight() int {
+	h := m.height - 14 // reserve space for other UI elements
+	if h < 2 {
+		h = 2
+	}
+	if h > 8 {
+		h = 8
+	}
+	return h
 }
 
 func (m Model) View() string {
@@ -197,6 +248,19 @@ func (m Model) View() string {
 		lines += "  " + subtitle + "\n"
 	}
 	lines += "\n"
+
+	// Visualizer
+	if m.vizEnabled && m.vizIndex < len(m.visualizers) {
+		vizView := m.visualizers[m.vizIndex].View()
+		if vizView != "" {
+			// Indent each line of the visualizer
+			for _, line := range strings.Split(vizView, "\n") {
+				lines += "  " + line + "\n"
+			}
+			lines += "\n"
+		}
+	}
+
 	lines += "  " + progressLine + "\n"
 	lines += "\n"
 	lines += "  " + statusLine + "\n"

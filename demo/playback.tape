@@ -15,7 +15,7 @@ Set Padding 20
 Set TypingSpeed 50ms
 
 Sleep 1s
-Type "./climp.exe 'Lady (Hear Me Tonight).mp3'"
+Type "climp 'Lady (Hear Me Tonight).mp3'"
 Enter
 Sleep 5s
 

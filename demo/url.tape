@@ -16,7 +16,7 @@ Set Padding 20
 Set TypingSpeed 50ms
 
 Sleep 500ms
-Type "./climp.exe https://www.youtube.com/watch?v=Aiay8I5IPB8"
+Type "climp https://www.youtube.com/watch?v=Aiay8I5IPB8"
 Enter
 Sleep 11s
 

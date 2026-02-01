@@ -4,7 +4,7 @@
 Output demo/browser.gif
 
 Set Shell "powershell"
-Set FontSize 30
+Set FontSize 20
 Set Width 1200
 Set Height 600
 Set Margin 20
@@ -15,7 +15,7 @@ Set Padding 20
 Set TypingSpeed 100ms
 
 Sleep 1s
-Type "./climp.exe"
+Type "climp"
 Enter
 Sleep 1s
 

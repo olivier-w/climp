@@ -46,6 +46,8 @@ climp https://youtube.com/watch?v=xxx&list=RDxxx   # radio/mix
 
 Use `n`/`p` to skip between tracks, `j`/`k` to scroll the queue, `enter` to jump to a selected track, and `del` to remove a track. Repeat mode (`r`) cycles through off, repeat song, and repeat playlist.
 
+![playlist demo](demo/playlist.gif)
+
 ## visualizer
 
 Press `v` to cycle through audio-reactive visualizers: VU meter, spectrum, waveform, braille, dense, matrix, and hatching.

@@ -25,6 +25,17 @@ Requires `yt-dlp` to be installed. climp will show install instructions if it's 
 
 ![url playback demo](demo/url-fixed.gif)
 
+## playlist support
+
+YouTube playlists and radio URLs are automatically detected. The first track starts playing immediately while the rest of the playlist is extracted in the background (up to 50 tracks). Upcoming tracks are downloaded one at a time ahead of playback.
+
+```bash
+climp https://youtube.com/playlist?list=PLxxxxxxxx
+climp https://youtube.com/watch?v=xxx&list=RDxxx   # radio/mix
+```
+
+Use `n`/`p` to skip between tracks and `j`/`k` to scroll the "Up Next" queue list. Repeat mode (`r`) cycles through off, repeat one, and repeat all (loops the entire playlist).
+
 ## visualizer
 
 Press `v` to cycle through audio-reactive visualizers: VU meter, spectrum, waveform, braille, dense, matrix, and hatching.
@@ -60,6 +71,7 @@ go build -o climp .
 climp song.mp3
 climp track.flac
 climp https://youtube.com/watch?v=...
+climp https://youtube.com/playlist?list=...
 ```
 
 ## keybindings
@@ -72,7 +84,9 @@ climp https://youtube.com/watch?v=...
 | up / k | volume +5% |
 | down / j | volume -5% |
 | v | cycle visualizer (vu / spectrum / waveform / braille / dense / matrix / hatching / off) |
-| r | toggle repeat |
+| r | toggle repeat (off / one / all) |
+| n | next track (playlist) |
+| N / p | previous track (playlist) |
 | s | save as mp3 (url playback only) |
 | q / esc / ctrl+c | quit |
 

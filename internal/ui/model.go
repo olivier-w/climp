@@ -46,6 +46,13 @@ type Model struct {
 	transitioning bool                      // waiting for next track to finish downloading
 
 	originalURL string // original URL for deferred playlist extraction
+
+	// View caches — avoid re-rendering expensive sections every vizTick frame.
+	headerCache    string // header + title + subtitle (changes on track change)
+	vizCache       string // indented visualizer output (changes on vizTick)
+	bottomCache    string // progress bar + status + queue + help (changes on tickMsg / discrete events)
+	queueViewCache string // rendered list.Model.View() (changes on queue mutations / key navigation)
+	dotsCache      string // pagination dots
 }
 
 // trackItem implements list.DefaultItem for queue display.
@@ -142,11 +149,163 @@ func (m *Model) syncQueueList() {
 	}
 }
 
+// rebuildQueueViewCache re-renders the queue list view and pagination dots,
+// then rebuilds the bottom cache since the queue is embedded in it.
+func (m *Model) rebuildQueueViewCache() {
+	if m.queue == nil || m.queue.Len() <= 1 {
+		m.queueViewCache = ""
+		m.dotsCache = ""
+		m.rebuildBottomCache()
+		return
+	}
+	m.queueViewCache = m.queueList.View()
+	p := m.queueList.Paginator
+	if p.TotalPages > 1 {
+		var sb strings.Builder
+		for i := 0; i < p.TotalPages; i++ {
+			if i == p.Page {
+				sb.WriteString(activeDotStyle.Render("•"))
+			} else {
+				sb.WriteString(inactiveDotStyle.Render("•"))
+			}
+		}
+		m.dotsCache = sb.String()
+	} else {
+		m.dotsCache = ""
+	}
+	m.rebuildBottomCache()
+}
+
+// rebuildHeaderCache rebuilds the cached header+title+subtitle section.
+func (m *Model) rebuildHeaderCache() {
+	var sb strings.Builder
+	sb.WriteString("\n  ")
+	sb.WriteString(headerStyle.Render("climp"))
+	sb.WriteString("\n\n  ")
+	sb.WriteString(titleStyle.Render(m.metadata.Title))
+	sb.WriteByte('\n')
+
+	if m.metadata.Artist != "" && m.metadata.Album != "" {
+		sb.WriteString("  ")
+		sb.WriteString(artistStyle.Render(fmt.Sprintf("%s - %s", m.metadata.Artist, m.metadata.Album)))
+		sb.WriteByte('\n')
+	} else if m.metadata.Artist != "" {
+		sb.WriteString("  ")
+		sb.WriteString(artistStyle.Render(m.metadata.Artist))
+		sb.WriteByte('\n')
+	} else if m.metadata.Album != "" {
+		sb.WriteString("  ")
+		sb.WriteString(artistStyle.Render(m.metadata.Album))
+		sb.WriteByte('\n')
+	}
+
+	sb.WriteByte('\n')
+	m.headerCache = sb.String()
+}
+
+// rebuildBottomCache rebuilds the cached section below the visualizer:
+// progress bar, status line, queue display, and help text.
+func (m *Model) rebuildBottomCache() {
+	w := m.width
+	if w < 30 {
+		w = 50
+	}
+
+	var sb strings.Builder
+	sb.Grow(256)
+
+	// Progress bar or transitioning message
+	if m.transitioning {
+		sb.WriteString("  ")
+		sb.WriteString(statusStyle.Render("Loading next track..."))
+		sb.WriteByte('\n')
+	} else {
+		elapsedStr := timeStyle.Render(util.FormatDuration(m.elapsed))
+		durationStr := timeStyle.Render(util.FormatDuration(m.duration))
+		barWidth := w - len(util.FormatDuration(m.elapsed)) - len(util.FormatDuration(m.duration)) - 6
+		if barWidth < 10 {
+			barWidth = 10
+		}
+		bar := renderProgressBar(m.elapsed.Seconds(), m.duration.Seconds(), barWidth)
+		sb.WriteString("  ")
+		sb.WriteString(fmt.Sprintf("%s %s %s", elapsedStr, bar, durationStr))
+		sb.WriteByte('\n')
+	}
+
+	sb.WriteByte('\n')
+
+	statusIcon := "▶"
+	statusText := "playing"
+	if m.paused {
+		statusIcon = "❚❚"
+		statusText = "paused"
+	}
+	repeatIcon := m.repeatMode.Icon()
+	volStr := renderVolumePercent(m.volume)
+
+	leftText := fmt.Sprintf("%s  %s", statusIcon, statusText)
+	if repeatIcon != "" {
+		leftText += "  " + repeatIcon
+	}
+	statusLeft := statusStyle.Render(leftText)
+	statusRight := statusStyle.Render(volStr)
+	gap := w - len(leftText) - len(volStr) - 4
+	if gap < 2 {
+		gap = 2
+	}
+
+	sb.WriteString("  ")
+	sb.WriteString(statusLeft)
+	sb.WriteString(spaces(gap))
+	sb.WriteString(statusRight)
+	sb.WriteByte('\n')
+
+	if m.saveMsg != "" {
+		sb.WriteString("  ")
+		sb.WriteString(helpStyle.Render(m.saveMsg))
+		sb.WriteByte('\n')
+	}
+
+	// Queue display — use compact summary when visualizer is active to avoid
+	// large terminal output that causes frame drops.
+	if m.queue != nil && m.queue.Len() > 1 {
+		sb.WriteByte('\n')
+		if m.vizEnabled {
+			next := m.queue.CurrentIndex() + 1
+			if next < m.queue.Len() {
+				t := m.queue.Track(next)
+				title := "..."
+				if t != nil {
+					title = t.Title
+				}
+				sb.WriteString("  ")
+				sb.WriteString(helpStyle.Render(fmt.Sprintf("Up next: %s  (%d/%d)", title, next+1, m.queue.Len())))
+				sb.WriteByte('\n')
+			}
+		} else {
+			sb.WriteString(m.queueViewCache)
+			sb.WriteByte('\n')
+			if m.dotsCache != "" {
+				sb.WriteString("  ")
+				sb.WriteString(m.dotsCache)
+				sb.WriteByte('\n')
+			}
+		}
+	}
+
+	sb.WriteByte('\n')
+	sb.WriteString("  ")
+	sb.WriteString(helpStyle.Render(helpText(m.sourcePath != "", m.queue != nil)))
+	sb.WriteByte('\n')
+
+	m.bottomCache = sb.String()
+}
+
 // New creates a new Model. sourcePath is the temp file path for URL downloads
 // (pass "" for local files to disable saving). originalURL is the URL passed on
 // the command line (used for deferred playlist extraction; pass "" for local files).
 func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string) Model {
-	return Model{
+	m := Model{
 		player:      p,
 		metadata:    meta,
 		duration:    p.Duration(),
@@ -157,6 +316,9 @@ func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string)
 		downloading: -1,
 		originalURL: originalURL,
 	}
+	m.rebuildHeaderCache()
+	m.rebuildBottomCache()
+	return m
 }
 
 // NewWithQueue creates a Model with playlist queue support.
@@ -165,6 +327,7 @@ func NewWithQueue(p *player.Player, meta player.Metadata, sourcePath string, q *
 	m.queue = q
 	m.queueList = newQueueList(50)
 	m.syncQueueList()
+	m.rebuildQueueViewCache()
 	return m
 }
 
@@ -202,6 +365,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case " ":
 			m.player.TogglePause()
 			m.paused = m.player.Paused()
+			m.rebuildBottomCache()
 			return m, tea.SetWindowTitle(windowTitle(m.metadata.Title, m.paused))
 		case "left", "h":
 			m.player.Seek(-5 * time.Second)
@@ -210,22 +374,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "+", "=":
 			m.player.AdjustVolume(0.05)
 			m.volume = m.player.Volume()
+			m.rebuildBottomCache()
 		case "-":
 			m.player.AdjustVolume(-0.05)
 			m.volume = m.player.Volume()
+			m.rebuildBottomCache()
 		case "r":
 			m.repeatMode = m.repeatMode.Next()
+			m.rebuildBottomCache()
 			return m, nil
 		case "v":
 			if !m.vizEnabled {
 				m.vizEnabled = true
 				m.vizIndex = 0
+				m.rebuildBottomCache()
 				return m, vizTickCmd()
 			}
 			m.vizIndex++
 			if m.vizIndex >= len(m.visualizers) {
 				m.vizEnabled = false
 				m.vizIndex = 0
+				m.vizCache = ""
+				m.rebuildBottomCache()
 			}
 			return m, nil
 		case "s":
@@ -233,6 +403,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.saving = true
 				m.saveMsg = "Saving..."
 				m.saveMsgTime = time.Now()
+				m.rebuildBottomCache()
 				src, title := m.sourcePath, m.sourceTitle
 				return m, func() tea.Msg {
 					destName, err := downloader.SaveFile(src, title)
@@ -253,6 +424,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.queue != nil && m.queue.Len() > 1 {
 			var cmd tea.Cmd
 			m.queueList, cmd = m.queueList.Update(msg)
+			m.rebuildQueueViewCache()
 			return m, cmd
 		}
 		return m, nil
@@ -266,6 +438,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sourcePath = ""
 		}
 		m.saveMsgTime = time.Now()
+		m.rebuildBottomCache()
 		return m, nil
 
 	case tickMsg:
@@ -275,7 +448,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.saveMsg != "" && time.Since(m.saveMsgTime) > 5*time.Second {
 			m.saveMsg = ""
 		}
-		m.syncQueueList()
+		m.rebuildBottomCache()
 		return m, tickCmd()
 
 	case vizTickMsg:
@@ -283,6 +456,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			samples := m.player.Samples(2048)
 			vizHeight := m.vizHeight()
 			m.visualizers[m.vizIndex].Update(samples, m.effectiveWidth(), vizHeight)
+			vizView := m.visualizers[m.vizIndex].View()
+			if vizView != "" {
+				var sb strings.Builder
+				for _, line := range strings.Split(vizView, "\n") {
+					sb.WriteString("  ")
+					sb.WriteString(line)
+					sb.WriteByte('\n')
+				}
+				sb.WriteByte('\n')
+				m.vizCache = sb.String()
+			} else {
+				m.vizCache = ""
+			}
 			return m, vizTickCmd()
 		}
 		return m, nil
@@ -323,7 +509,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				h = 6
 			}
 			m.queueList.SetHeight(h)
+			m.rebuildQueueViewCache()
 		}
+		m.rebuildHeaderCache()
+		m.rebuildBottomCache()
 		return m, nil
 	}
 
@@ -356,6 +545,8 @@ func (m Model) skipToNext() (tea.Model, tea.Cmd) {
 	if next.State == queue.Downloading {
 		m.transitioning = true
 		m.player.Close()
+		m.syncQueueList()
+		m.rebuildQueueViewCache()
 		return m, nil
 	}
 	return m, nil
@@ -391,6 +582,8 @@ func (m Model) handleQueuePlaybackEnd() (tea.Model, tea.Cmd) {
 		if next.State == queue.Downloading {
 			m.transitioning = true
 			m.player.Close()
+			m.syncQueueList()
+			m.rebuildQueueViewCache()
 			return m, nil
 		}
 	}
@@ -426,12 +619,16 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (tea.Model, tea.Cmd
 			// Try to skip past the failed track
 			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
 			if m.queue.Advance() {
+				m.syncQueueList()
+				m.rebuildQueueViewCache()
 				// Start downloading this new next track
 				return m, m.startNextDownload()
 			}
 			m.quitting = true
 			return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 		}
+		m.syncQueueList()
+		m.rebuildQueueViewCache()
 		return m, m.startNextDownload()
 	}
 
@@ -465,12 +662,16 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (tea.Model, tea.Cmd
 		m.duration = m.player.Duration()
 		m.volume = m.player.Volume()
 		m.paused = false
+		m.rebuildHeaderCache()
 
 		cmds = append(cmds, checkDone(m.player), tickCmd(), tea.SetWindowTitle(windowTitle(m.metadata.Title, false)))
 	}
 
 	// Start downloading next undownloaded track
 	cmds = append(cmds, m.startNextDownload())
+
+	m.syncQueueList()
+	m.rebuildQueueViewCache()
 
 	return m, tea.Batch(cmds...)
 }
@@ -510,6 +711,7 @@ func (m Model) handlePlaylistExtracted(msg playlistExtractedMsg) (tea.Model, tea
 	}
 	m.queueList.SetHeight(h)
 	m.syncQueueList()
+	m.rebuildQueueViewCache()
 	m.originalURL = "" // extraction done
 
 	// Start downloading the next track.
@@ -536,7 +738,9 @@ func (m Model) advanceToTrack(track *queue.Track) (tea.Model, tea.Cmd) {
 	m.volume = m.player.Volume()
 	m.paused = false
 	m.transitioning = false
+	m.rebuildHeaderCache()
 	m.syncQueueList()
+	m.rebuildQueueViewCache()
 
 	cmds := []tea.Cmd{
 		checkDone(m.player),
@@ -633,113 +837,7 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
-
-	w := m.width
-	if w < 30 {
-		w = 50
-	}
-
-	header := headerStyle.Render("climp")
-
-	title := titleStyle.Render(m.metadata.Title)
-
-	subtitle := ""
-	if m.metadata.Artist != "" && m.metadata.Album != "" {
-		subtitle = artistStyle.Render(fmt.Sprintf("%s - %s", m.metadata.Artist, m.metadata.Album))
-	} else if m.metadata.Artist != "" {
-		subtitle = artistStyle.Render(m.metadata.Artist)
-	} else if m.metadata.Album != "" {
-		subtitle = artistStyle.Render(m.metadata.Album)
-	}
-
-	lines := "\n"
-	lines += "  " + header + "\n"
-	lines += "\n"
-	lines += "  " + title + "\n"
-	if subtitle != "" {
-		lines += "  " + subtitle + "\n"
-	}
-	lines += "\n"
-
-	// Visualizer
-	if m.vizEnabled && m.vizIndex < len(m.visualizers) {
-		vizView := m.visualizers[m.vizIndex].View()
-		if vizView != "" {
-			for _, line := range strings.Split(vizView, "\n") {
-				lines += "  " + line + "\n"
-			}
-			lines += "\n"
-		}
-	}
-
-	// Progress bar or transitioning message
-	if m.transitioning {
-		lines += "  " + statusStyle.Render("Loading next track...") + "\n"
-	} else {
-		elapsedStr := timeStyle.Render(util.FormatDuration(m.elapsed))
-		durationStr := timeStyle.Render(util.FormatDuration(m.duration))
-		barWidth := w - len(util.FormatDuration(m.elapsed)) - len(util.FormatDuration(m.duration)) - 6
-		if barWidth < 10 {
-			barWidth = 10
-		}
-		bar := renderProgressBar(m.elapsed.Seconds(), m.duration.Seconds(), barWidth)
-		progressLine := fmt.Sprintf("%s %s %s", elapsedStr, bar, durationStr)
-		lines += "  " + progressLine + "\n"
-	}
-
-	lines += "\n"
-
-	statusIcon := "▶"
-	statusText := "playing"
-	if m.paused {
-		statusIcon = "❚❚"
-		statusText = "paused"
-	}
-	repeatIcon := m.repeatMode.Icon()
-	volStr := renderVolumePercent(m.volume)
-
-	leftText := fmt.Sprintf("%s  %s", statusIcon, statusText)
-	if repeatIcon != "" {
-		leftText += "  " + repeatIcon
-	}
-	statusLeft := statusStyle.Render(leftText)
-	statusRight := statusStyle.Render(volStr)
-	gap := w - len(leftText) - len(volStr) - 4
-	if gap < 2 {
-		gap = 2
-	}
-	statusLine := fmt.Sprintf("%s%s%s", statusLeft, spaces(gap), statusRight)
-
-	lines += "  " + statusLine + "\n"
-	if m.saveMsg != "" {
-		lines += "  " + helpStyle.Render(m.saveMsg) + "\n"
-	}
-
-	// Queue display
-	if m.queue != nil && m.queue.Len() > 1 {
-		lines += "\n"
-		lines += m.queueList.View() + "\n"
-		// Custom page indicator
-		p := m.queueList.Paginator
-		if p.TotalPages > 1 {
-			var dots string
-			for i := 0; i < p.TotalPages; i++ {
-				if i == p.Page {
-					dots += activeDotStyle.Render("•")
-				} else {
-					dots += inactiveDotStyle.Render("•")
-				}
-			}
-			lines += "  " + dots + "\n"
-		}
-	}
-
-	lines += "\n"
-
-	help := helpStyle.Render(helpText(m.sourcePath != "", m.queue != nil))
-	lines += "  " + help + "\n"
-
-	return lines
+	return m.headerCache + m.vizCache + m.bottomCache
 }
 
 func windowTitle(title string, paused bool) string {

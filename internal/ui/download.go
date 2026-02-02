@@ -153,8 +153,8 @@ func (m DownloadModel) View() string {
 
 	switch m.status.Phase {
 	case "downloading":
-		lines += "  " + statusStyle.Render("Downloading...") + "\n"
 		if m.status.Percent >= 0 {
+			lines += "  " + statusStyle.Render("Downloading...") + "\n"
 			lines += "  " + m.progress.ViewAs(m.status.Percent) + fmt.Sprintf("  %.0f%%", m.status.Percent*100) + "\n"
 			detail := ""
 			if m.status.TotalSize != "" {
@@ -176,7 +176,7 @@ func (m DownloadModel) View() string {
 				lines += "  " + helpStyle.Render(detail) + "\n"
 			}
 		} else {
-			lines += "  " + m.spinner.View() + " " + helpStyle.Render("Downloading...") + "\n"
+			lines += "  " + m.spinner.View() + " " + statusStyle.Render("Starting download...") + "\n"
 		}
 
 	case "converting":

@@ -144,18 +144,14 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 	return finalPath, title, cleanup, nil
 }
 
-// PlaylistEntry represents a single video in a playlist.
+// PlaylistEntry represents a single video/track in a playlist.
 type PlaylistEntry struct {
 	ID    string
 	Title string
+	URL   string // actual webpage URL for the entry
 }
 
-// VideoURL returns a YouTube watch URL for the given video ID.
-func VideoURL(id string) string {
-	return "https://www.youtube.com/watch?v=" + id
-}
-
-// ExtractPlaylist runs yt-dlp --flat-playlist to extract video IDs and titles.
+// ExtractPlaylist runs yt-dlp --flat-playlist to extract track IDs, titles, and URLs.
 // Returns nil, nil if the URL is a single video (0 or 1 entries).
 // Caps at 50 entries.
 func ExtractPlaylist(url string) ([]PlaylistEntry, error) {
@@ -168,6 +164,7 @@ func ExtractPlaylist(url string) ([]PlaylistEntry, error) {
 		"--flat-playlist",
 		"--print", "id",
 		"--print", "title",
+		"--print", "url",
 		"--playlist-end", "50",
 		url,
 	)
@@ -192,16 +189,27 @@ func ExtractPlaylist(url string) ([]PlaylistEntry, error) {
 	}
 	lines = cleaned
 
-	// Lines come in pairs: id, title, id, title...
-	if len(lines) < 2 {
+	// Lines come in triples: id, title, url, id, title, url...
+	if len(lines) < 3 {
 		return nil, nil // single video, not a playlist
 	}
 
 	var entries []PlaylistEntry
-	for i := 0; i+1 < len(lines); i += 2 {
+	for i := 0; i+2 < len(lines); i += 3 {
+		entryURL := lines[i+2]
+		// For YouTube, --flat-playlist --print url returns the raw video URL;
+		// construct a proper watch URL if it looks like a bare YouTube video ID.
+		if !strings.HasPrefix(entryURL, "http") {
+			entryURL = "https://www.youtube.com/watch?v=" + lines[i]
+		}
+		title := lines[i+1]
+		if title == "NA" || title == "[Private video]" || title == "[Deleted video]" {
+			title = ""
+		}
 		entries = append(entries, PlaylistEntry{
 			ID:    lines[i],
-			Title: lines[i+1],
+			Title: title,
+			URL:   entryURL,
 		})
 	}
 

@@ -115,6 +115,13 @@ func (q *Queue) SetTrackPath(i int, path string) {
 	}
 }
 
+// SetTrackTitle sets the title of the track at the given index.
+func (q *Queue) SetTrackTitle(i int, title string) {
+	if i >= 0 && i < len(q.tracks) {
+		q.tracks[i].Title = title
+	}
+}
+
 // SetTrackCleanup sets the cleanup function for the track at the given index.
 func (q *Queue) SetTrackCleanup(i int, cleanup func()) {
 	if i >= 0 && i < len(q.tracks) {

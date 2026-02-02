@@ -125,7 +125,11 @@ func (m *Model) syncQueueList() {
 		case queue.Ready:
 			desc = "ready"
 		}
-		items = append(items, trackItem{title: t.Title, desc: desc})
+		title := t.Title
+		if title == "" {
+			title = fmt.Sprintf("Track %d", i+1)
+		}
+		items = append(items, trackItem{title: title, desc: desc})
 	}
 
 	// Only update items if something changed, to preserve cursor/pagination.
@@ -634,6 +638,9 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (tea.Model, tea.Cmd
 
 	m.queue.SetTrackPath(msg.index, msg.path)
 	m.queue.SetTrackCleanup(msg.index, msg.cleanup)
+	if msg.title != "" {
+		m.queue.SetTrackTitle(msg.index, msg.title)
+	}
 	m.queue.SetTrackState(msg.index, queue.Ready)
 	if msg.index == m.downloading {
 		m.downloading = -1
@@ -689,7 +696,7 @@ func (m Model) handlePlaylistExtracted(msg playlistExtractedMsg) (tea.Model, tea
 		tracks[i] = queue.Track{
 			ID:    e.ID,
 			Title: e.Title,
-			URL:   downloader.VideoURL(e.ID),
+			URL:   e.URL,
 			State: queue.Pending,
 		}
 	}
@@ -770,9 +777,9 @@ func (m Model) downloadTrackCmd(index int) tea.Cmd {
 	m.downloading = index
 	m.dlProgress = downloader.DownloadStatus{}
 
-	url := downloader.VideoURL(track.ID)
+	trackURL := track.URL
 	return func() tea.Msg {
-		path, title, cleanup, err := downloader.Download(url, nil)
+		path, title, cleanup, err := downloader.Download(trackURL, nil)
 		if title == "" {
 			title = track.Title
 		}

@@ -9,7 +9,7 @@ const (
 	RepeatAll
 )
 
-// Next cycles to the next repeat mode.
+// Next cycles to the next repeat mode: off → song → playlist → off.
 func (r RepeatMode) Next() RepeatMode {
 	switch r {
 	case RepeatOff:
@@ -37,9 +37,9 @@ func (r RepeatMode) String() string {
 func (r RepeatMode) Icon() string {
 	switch r {
 	case RepeatOne:
-		return "[repeat]"
+		return "[repeat song]"
 	case RepeatAll:
-		return "[repeat all]"
+		return "[repeat playlist]"
 	default:
 		return ""
 	}

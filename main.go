@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/olivier-w/climp/internal/downloader"
 	"github.com/olivier-w/climp/internal/player"
+	"github.com/olivier-w/climp/internal/queue"
 	"github.com/olivier-w/climp/internal/ui"
 )
 
@@ -100,17 +102,72 @@ func main() {
 	defer p.Close()
 
 	// Create and run TUI
-	var sourcePath, originalURL string
+	var model ui.Model
 	if downloader.IsURL(arg) {
-		sourcePath = path
-		originalURL = arg
+		model = ui.New(p, meta, path, arg)
+	} else if siblings := scanAudioFiles(path); siblings != nil {
+		// Build queue from sibling audio files in the same directory
+		tracks := make([]queue.Track, len(siblings))
+		var startIdx int
+		absPath, _ := filepath.Abs(path)
+		for i, f := range siblings {
+			tracks[i] = queue.Track{
+				Title: strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)),
+				Path:  f,
+				State: queue.Ready,
+			}
+			if f == absPath {
+				startIdx = i
+			}
+		}
+		tracks[startIdx].State = queue.Playing
+		q := queue.New(tracks)
+		q.SetCurrentIndex(startIdx)
+		model = ui.NewWithQueue(p, meta, "", q)
+	} else {
+		model = ui.New(p, meta, "", "")
 	}
-	model := ui.New(p, meta, sourcePath, originalURL)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := program.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// scanAudioFiles returns all supported audio files in the same directory as path,
+// sorted alphabetically (case-insensitive). Returns nil if fewer than 2 files found.
+func scanAudioFiles(path string) []string {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil
+	}
+	dir := filepath.Dir(absPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	supported := map[string]bool{".mp3": true, ".wav": true, ".flac": true, ".ogg": true}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if supported[ext] {
+			files = append(files, filepath.Join(dir, e.Name()))
+		}
+	}
+
+	if len(files) < 2 {
+		return nil
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return strings.ToLower(filepath.Base(files[i])) < strings.ToLower(filepath.Base(files[j]))
+	})
+
+	return files
 }
 

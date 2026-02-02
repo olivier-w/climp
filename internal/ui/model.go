@@ -103,6 +103,8 @@ func newQueueList(width int) list.Model {
 
 // syncQueueList rebuilds queueList items from the current queue state.
 // It preserves the cursor position and only updates when items change.
+// Items are ordered: tracks after current first, then tracks before current
+// (wrapping around), so the "up next" track is always first.
 func (m *Model) syncQueueList() {
 	if m.queue == nil {
 		return
@@ -111,25 +113,21 @@ func (m *Model) syncQueueList() {
 	totalTracks := m.queue.Len()
 
 	var items []list.Item
+	// Tracks after current
 	for i := currentIdx + 1; i < totalTracks; i++ {
 		t := m.queue.Track(i)
 		if t == nil {
 			continue
 		}
-		desc := fmt.Sprintf("track %d of %d", i+1, totalTracks)
-		switch t.State {
-		case queue.Downloading:
-			desc = "downloading..."
-		case queue.Failed:
-			desc = "failed"
-		case queue.Ready:
-			desc = "ready"
+		items = append(items, m.trackToItem(t, i, totalTracks))
+	}
+	// Tracks before current (wrap-around)
+	for i := 0; i < currentIdx; i++ {
+		t := m.queue.Track(i)
+		if t == nil {
+			continue
 		}
-		title := t.Title
-		if title == "" {
-			title = fmt.Sprintf("Track %d", i+1)
-		}
-		items = append(items, trackItem{title: title, desc: desc})
+		items = append(items, m.trackToItem(t, i, totalTracks))
 	}
 
 	// Only update items if something changed, to preserve cursor/pagination.
@@ -151,6 +149,26 @@ func (m *Model) syncQueueList() {
 			m.queueList.Select(sel)
 		}
 	}
+}
+
+// trackToItem converts a queue track to a list item for display.
+func (m *Model) trackToItem(t *queue.Track, i, totalTracks int) trackItem {
+	desc := fmt.Sprintf("track %d of %d", i+1, totalTracks)
+	switch t.State {
+	case queue.Downloading:
+		desc = "downloading..."
+	case queue.Failed:
+		desc = "failed"
+	case queue.Ready:
+		desc = "ready"
+	case queue.Done:
+		desc = "played"
+	}
+	title := t.Title
+	if title == "" {
+		title = fmt.Sprintf("Track %d", i+1)
+	}
+	return trackItem{title: title, desc: desc}
 }
 
 // rebuildQueueViewCache re-renders the queue list view and pagination dots,
@@ -423,6 +441,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.queue != nil {
 				return m.skipToPrevious()
 			}
+		case "enter":
+			if m.queue != nil && m.queue.Len() > 1 {
+				return m.jumpToSelected()
+			}
 		}
 		// Forward navigation keys to queue list
 		if m.queue != nil && m.queue.Len() > 1 {
@@ -530,8 +552,9 @@ func (m Model) skipToNext() (tea.Model, tea.Cmd) {
 		if m.repeatMode == RepeatAll {
 			// Wrap to beginning
 			first := m.queue.Track(0)
-			if first != nil && first.State == queue.Ready {
+			if first != nil && (first.State == queue.Ready || (first.State == queue.Done && first.Path != "")) {
 				m.cleanupOldTracks()
+				m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
 				m.queue.SetCurrentIndex(0)
 				m.queue.SetTrackState(0, queue.Playing)
 				return m.advanceToTrack(first)
@@ -554,6 +577,35 @@ func (m Model) skipToNext() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// jumpToSelected jumps to the track currently highlighted in the queue list.
+func (m Model) jumpToSelected() (tea.Model, tea.Cmd) {
+	sel := m.queueList.Index()
+	targetIdx := m.listIndexToQueueIndex(sel)
+	if targetIdx < 0 || targetIdx >= m.queue.Len() || targetIdx == m.queue.CurrentIndex() {
+		return m, nil
+	}
+	target := m.queue.Track(targetIdx)
+	if target == nil || (target.State != queue.Ready && !(target.State == queue.Done && target.Path != "")) {
+		return m, nil
+	}
+	m.cleanupOldTracks()
+	m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
+	m.queue.SetCurrentIndex(targetIdx)
+	m.queue.SetTrackState(targetIdx, queue.Playing)
+	return m.advanceToTrack(m.queue.Current())
+}
+
+// listIndexToQueueIndex maps a queue list selection index back to the real queue index.
+// The list is ordered: tracks after current, then tracks before current.
+func (m Model) listIndexToQueueIndex(sel int) int {
+	currentIdx := m.queue.CurrentIndex()
+	afterCount := m.queue.Len() - currentIdx - 1
+	if sel < afterCount {
+		return currentIdx + 1 + sel
+	}
+	return sel - afterCount
 }
 
 // skipToPrevious goes back to the previous track if it's still ready.
@@ -729,9 +781,18 @@ func (m Model) handlePlaylistExtracted(msg playlistExtractedMsg) (tea.Model, tea
 func (m Model) advanceToTrack(track *queue.Track) (tea.Model, tea.Cmd) {
 	m.player.Close()
 
-	m.metadata = player.Metadata{Title: track.Title}
+	// Local files (no URL) have full metadata on disk; URL downloads only have a title.
+	if track.URL == "" && track.Path != "" {
+		m.metadata = player.ReadMetadata(track.Path)
+	} else {
+		m.metadata = player.Metadata{Title: track.Title}
+	}
 	m.sourceTitle = track.Title
-	m.sourcePath = track.Path
+	if track.URL != "" {
+		m.sourcePath = track.Path
+	} else {
+		m.sourcePath = ""
+	}
 
 	var err error
 	m.player, err = player.New(track.Path)

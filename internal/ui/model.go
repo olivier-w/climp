@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -47,6 +48,9 @@ type Model struct {
 	transitionTarget int                       // queue index we're waiting to play (-1 if not jumping)
 
 	originalURL string // original URL for deferred playlist extraction
+
+	keys keyMap
+	help help.Model
 
 	// View caches — avoid re-rendering expensive sections every vizTick frame.
 	headerCache    string // header + title + subtitle (changes on track change)
@@ -316,9 +320,16 @@ func (m *Model) rebuildBottomCache() {
 		}
 	}
 
+	m.keys.updateEnabled(m.sourcePath != "", m.queue != nil)
 	sb.WriteByte('\n')
-	sb.WriteString("  ")
-	sb.WriteString(helpStyle.Render(helpText(m.sourcePath != "", m.queue != nil)))
+	helpView := m.help.View(m.keys)
+	for i, line := range strings.Split(helpView, "\n") {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString("  ")
+		sb.WriteString(line)
+	}
 	sb.WriteByte('\n')
 
 	m.bottomCache = sb.String()
@@ -328,6 +339,16 @@ func (m *Model) rebuildBottomCache() {
 // (pass "" for local files to disable saving). originalURL is the URL passed on
 // the command line (used for deferred playlist extraction; pass "" for local files).
 func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string) Model {
+	keys := newKeyMap()
+	keys.updateEnabled(sourcePath != "", false)
+	h := help.New()
+	h.ShortSeparator = "  "
+	h.Styles.ShortKey = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"})
+	h.Styles.ShortDesc = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"})
+	h.Styles.FullKey = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"})
+	h.Styles.FullDesc = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"})
+	h.Styles.FullSeparator = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"})
+	h.Styles.ShortSeparator = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"})
 	m := Model{
 		player:           p,
 		metadata:         meta,
@@ -339,6 +360,8 @@ func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string)
 		downloading:      -1,
 		transitionTarget: -1,
 		originalURL:      originalURL,
+		keys:             keys,
+		help:             h,
 	}
 	m.rebuildHeaderCache()
 	m.rebuildBottomCache()
@@ -451,6 +474,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.queue != nil && m.queue.Len() > 1 {
 				return m.removeSelected()
 			}
+		case "?":
+			m.help.ShowAll = !m.help.ShowAll
+			m.rebuildBottomCache()
+			return m, nil
 		}
 		// Forward navigation keys to queue list
 		if m.queue != nil && m.queue.Len() > 1 {
@@ -534,6 +561,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.help.Width = msg.Width
 		if m.queue != nil {
 			m.queueList.SetWidth(msg.Width - 4)
 			h := msg.Height - 14 // reserve: 8 lines above queue + 4 below (dots, help) + 2 margin

@@ -137,6 +137,23 @@ func (q *Queue) Track(i int) *Track {
 	return &q.tracks[i]
 }
 
+// Remove removes the track at the given index. Cannot remove the currently playing track.
+// Adjusts the current index if needed. Returns false if the index is invalid or is current.
+func (q *Queue) Remove(i int) bool {
+	if i < 0 || i >= len(q.tracks) || i == q.current {
+		return false
+	}
+	// Run cleanup if present
+	if q.tracks[i].Cleanup != nil {
+		q.tracks[i].Cleanup()
+	}
+	q.tracks = append(q.tracks[:i], q.tracks[i+1:]...)
+	if i < q.current {
+		q.current--
+	}
+	return true
+}
+
 // CleanupAll calls the cleanup function on every track that has one.
 func (q *Queue) CleanupAll() {
 	for i := range q.tracks {

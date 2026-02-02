@@ -41,9 +41,10 @@ type Model struct {
 	// Queue fields
 	queue         *queue.Queue              // nil for single-track playback
 	queueList     list.Model                // bubbles list for upcoming tracks display
-	downloading   int                       // queue index being downloaded, -1 if none
-	dlProgress    downloader.DownloadStatus // progress of background download
-	transitioning bool                      // waiting for next track to finish downloading
+	downloading      int                       // queue index being downloaded, -1 if none
+	dlProgress       downloader.DownloadStatus // progress of background download
+	transitioning    bool                      // waiting for a track to finish downloading
+	transitionTarget int                       // queue index we're waiting to play (-1 if not jumping)
 
 	originalURL string // original URL for deferred playlist extraction
 
@@ -328,15 +329,16 @@ func (m *Model) rebuildBottomCache() {
 // the command line (used for deferred playlist extraction; pass "" for local files).
 func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string) Model {
 	m := Model{
-		player:      p,
-		metadata:    meta,
-		duration:    p.Duration(),
-		volume:      p.Volume(),
-		sourcePath:  sourcePath,
-		sourceTitle: meta.Title,
-		visualizers: visualizer.Modes(),
-		downloading: -1,
-		originalURL: originalURL,
+		player:           p,
+		metadata:         meta,
+		duration:         p.Duration(),
+		volume:           p.Volume(),
+		sourcePath:       sourcePath,
+		sourceTitle:      meta.Title,
+		visualizers:      visualizer.Modes(),
+		downloading:      -1,
+		transitionTarget: -1,
+		originalURL:      originalURL,
 	}
 	m.rebuildHeaderCache()
 	m.rebuildBottomCache()
@@ -444,6 +446,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if m.queue != nil && m.queue.Len() > 1 {
 				return m.jumpToSelected()
+			}
+		case "backspace", "delete":
+			if m.queue != nil && m.queue.Len() > 1 {
+				return m.removeSelected()
 			}
 		}
 		// Forward navigation keys to queue list
@@ -571,6 +577,7 @@ func (m Model) skipToNext() (tea.Model, tea.Cmd) {
 	}
 	if next.State == queue.Downloading {
 		m.transitioning = true
+		m.transitionTarget = m.queue.CurrentIndex() + 1
 		m.player.Close()
 		m.syncQueueList()
 		m.rebuildQueueViewCache()
@@ -587,14 +594,35 @@ func (m Model) jumpToSelected() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	target := m.queue.Track(targetIdx)
-	if target == nil || (target.State != queue.Ready && !(target.State == queue.Done && target.Path != "")) {
+	if target == nil || target.State == queue.Failed {
 		return m, nil
 	}
-	m.cleanupOldTracks()
-	m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
-	m.queue.SetCurrentIndex(targetIdx)
-	m.queue.SetTrackState(targetIdx, queue.Playing)
-	return m.advanceToTrack(m.queue.Current())
+
+	// Track is ready to play immediately.
+	if target.State == queue.Ready || (target.State == queue.Done && target.Path != "") {
+		m.cleanupOldTracks()
+		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
+		m.queue.SetCurrentIndex(targetIdx)
+		m.queue.SetTrackState(targetIdx, queue.Playing)
+		return m.advanceToTrack(m.queue.Current())
+	}
+
+	// Track needs downloading — enter transitioning state.
+	if target.State == queue.Pending || target.State == queue.Downloading {
+		m.transitioning = true
+		m.transitionTarget = targetIdx
+		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
+		m.player.Close()
+		m.syncQueueList()
+		m.rebuildQueueViewCache()
+		// If pending, kick off its download now.
+		if target.State == queue.Pending {
+			return m, m.downloadTrackCmd(targetIdx)
+		}
+		return m, nil
+	}
+
+	return m, nil
 }
 
 // listIndexToQueueIndex maps a queue list selection index back to the real queue index.
@@ -606,6 +634,31 @@ func (m Model) listIndexToQueueIndex(sel int) int {
 		return currentIdx + 1 + sel
 	}
 	return sel - afterCount
+}
+
+// removeSelected removes the track currently highlighted in the queue list.
+func (m Model) removeSelected() (tea.Model, tea.Cmd) {
+	sel := m.queueList.Index()
+	targetIdx := m.listIndexToQueueIndex(sel)
+	if targetIdx < 0 || targetIdx >= m.queue.Len() || targetIdx == m.queue.CurrentIndex() {
+		return m, nil
+	}
+	if !m.queue.Remove(targetIdx) {
+		return m, nil
+	}
+	// If only 1 track left, clear the queue display
+	if m.queue.Len() <= 1 {
+		m.syncQueueList()
+		m.rebuildQueueViewCache()
+		return m, nil
+	}
+	m.syncQueueList()
+	// Adjust cursor if it's now past the end of the list
+	if sel >= len(m.queueList.Items()) && sel > 0 {
+		m.queueList.Select(sel - 1)
+	}
+	m.rebuildQueueViewCache()
+	return m, nil
 }
 
 // skipToPrevious goes back to the previous track if it's still ready.
@@ -637,6 +690,7 @@ func (m Model) handleQueuePlaybackEnd() (tea.Model, tea.Cmd) {
 		}
 		if next.State == queue.Downloading {
 			m.transitioning = true
+			m.transitionTarget = m.queue.CurrentIndex() + 1
 			m.player.Close()
 			m.syncQueueList()
 			m.rebuildQueueViewCache()
@@ -700,12 +754,13 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (tea.Model, tea.Cmd
 
 	var cmds []tea.Cmd
 
-	if m.transitioning && msg.index == m.queue.CurrentIndex()+1 {
+	if m.transitioning && msg.index == m.transitionTarget {
 		m.transitioning = false
 		m.cleanupOldTracks()
 		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
-		m.queue.Advance()
-		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Playing)
+		m.queue.SetCurrentIndex(m.transitionTarget)
+		m.queue.SetTrackState(m.transitionTarget, queue.Playing)
+		m.transitionTarget = -1
 		track := m.queue.Current()
 		m.metadata = player.Metadata{Title: track.Title}
 		m.sourceTitle = track.Title

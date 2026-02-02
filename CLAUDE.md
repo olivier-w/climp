@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-climp is a standalone CLI media player built with Go. Supports MP3, WAV, FLAC, and OGG Vorbis. Uses a Bubbletea TUI with real-time progress, volume control, ID3 tag display, and repeat mode. Supports URL playback via yt-dlp with a bubbles-based download progress UI. YouTube playlists and radio URLs are automatically detected — the first track plays immediately while remaining tracks (up to 50) are extracted and downloaded in the background. No backend or cloud services.
+climp is a standalone CLI media player built with Go. Supports MP3, WAV, FLAC, and OGG Vorbis. Uses a Bubbletea TUI with real-time progress, volume control, ID3 tag display, and repeat mode. Supports URL playback via yt-dlp with a bubbles-based download progress UI. YouTube playlists and radio URLs are automatically detected — the first track plays immediately while remaining tracks (up to 50) are extracted and downloaded in the background. Local directory playlists are built automatically when playing a file that has sibling audio files. No backend or cloud services.
 
 Usage: `climp <file.mp3|.wav|.flac|.ogg>` or `climp <url|playlist-url>`
 
@@ -28,11 +28,11 @@ Three main subsystems connected through `main.go`:
 
 **Downloader** (`internal/downloader/`) — URL detection and yt-dlp integration. `Download()` runs yt-dlp as a subprocess with `--no-playlist` to extract audio as WAV into a temp file (WAV avoids yt-dlp's conversion overhead). Streams yt-dlp output via callback for progress display. Returns a cleanup func for temp file removal. `ExtractPlaylist()` uses `yt-dlp --flat-playlist` to extract video IDs and titles (up to 50 entries) from playlist/radio URLs without downloading. Returns nil for single-video URLs. `save.go` provides `SaveFile()` which converts downloaded WAV to MP3 via ffmpeg on demand (triggered by `s` key).
 
-**Queue** (`internal/queue/`) — Manages ordered playlist tracks. `Track` struct holds ID, title, URL, file path, state (Pending → Downloading → Ready → Playing → Done/Failed), and a cleanup function for temp files. `Queue` provides `Current()`, `Next()`, `Advance()`, `Previous()`, `Peek(n)`, and state mutation methods. Single-threaded, mutated only from Bubbletea's Update loop.
+**Queue** (`internal/queue/`) — Manages ordered playlist tracks. `Track` struct holds ID, title, URL, file path, state (Pending → Downloading → Ready → Playing → Done/Failed), and a cleanup function for temp files. `Queue` provides `Current()`, `Next()`, `Advance()`, `Previous()`, `Peek(n)`, `Remove()`, and state mutation methods. Single-threaded, mutated only from Bubbletea's Update loop.
 
 **TUI** (`internal/ui/`) — Standard Bubbletea Model pattern. A 200ms tick polls `player.Position()` to update the progress bar. A blocking goroutine waits on `player.Done()` channel to detect playback end. On repeat-one, playback end triggers `player.Restart()` and re-watches the new done channel instead of quitting. Repeat mode is defined in `repeat.go` with three modes: off, repeat-one, and repeat-all (loops entire playlist). The View renders the "Option A" minimal layout with adaptive colors for light/dark terminals. `download.go` implements a separate Bubbletea model using bubbles (spinner + progress bar) for the yt-dlp download phase, showing phases (fetching/downloading/converting), download speed, size, and ETA.
 
-**Playlist flow**: For URL playback, `Init()` fires a background `extractPlaylistCmd`. If 2+ entries are found, a Queue is built (track 0 = currently playing, rest = Pending). The next track is downloaded in the background one at a time. On track end or `n` keypress, playback advances: the old player is closed, a new player is created from the next track's downloaded WAV, and the track after that starts downloading. Old temp files are cleaned up 2 tracks behind. The "Up Next" queue is displayed via a bubbles `list.Model` with track state indicators. In visualizer mode, the queue is shown as a compact one-liner to reduce render overhead.
+**Playlist flow**: Two sources build queues: (1) URL playback — `Init()` fires a background `extractPlaylistCmd`, if 2+ entries are found a Queue is built with tracks in Pending state, downloaded one at a time ahead of playback. (2) Local file playback — `main.go` calls `scanAudioFiles()` to find sibling audio files in the same directory, builds a Queue with all tracks in Ready state. In both cases, on track end or `n` keypress, playback advances: the old player is closed, a new player is created from the next track, and for URL playlists the track after that starts downloading. `enter` jumps to any selected track (downloading on demand for URL playlists). `del`/`backspace` removes a track from the queue. Old temp files are cleaned up 2 tracks behind (only for URL downloads; local files have nil cleanup). The "Up Next" queue list wraps around to show all tracks (after current first, then before current). In visualizer mode, the queue is shown as a compact one-liner to reduce render overhead.
 
 **Data flow**: `tea.KeyMsg` → player controls (pause/seek/volume) → next tick updates UI state from player. `tea.WindowSizeMsg` drives responsive progress bar width.
 
@@ -55,7 +55,7 @@ Three main subsystems connected through `main.go`:
 
 ## Keybindings
 
-Defined in `internal/ui/keys.go`. Vim-style alternatives (h/j/k/l) mirror arrow keys. `r` toggles repeat mode (off/one/all). `s` saves the current URL download as MP3 (only available during URL playback). When a playlist queue is active: `n` skips to next track, `N`/`p` goes to previous track, `j`/`k` scroll the queue list.
+Defined in `internal/ui/keys.go`. Vim-style alternatives (h/j/k/l) mirror arrow keys. `r` toggles repeat mode (off/song/playlist). `s` saves the current URL download as MP3 (only available during URL playback). When a playlist queue is active: `n` skips to next track, `N`/`p` goes to previous track, `j`/`k` scroll the queue list, `enter` plays the selected track, `del`/`backspace` removes a track from the queue.
 
 ## External Tools
 

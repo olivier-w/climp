@@ -19,6 +19,7 @@ type keyMap struct {
 	Seek       key.Binding
 	Volume     key.Binding
 	Repeat     key.Binding
+	Shuffle    key.Binding
 	Visualizer key.Binding
 	NextTrack  key.Binding
 	PrevTrack  key.Binding
@@ -47,6 +48,11 @@ func newKeyMap() keyMap {
 		Repeat: key.NewBinding(
 			key.WithKeys("r"),
 			key.WithHelp("r", "repeat"),
+		),
+		Shuffle: key.NewBinding(
+			key.WithKeys("z"),
+			key.WithHelp("z", "shuffle"),
+			key.WithDisabled(),
 		),
 		Visualizer: key.NewBinding(
 			key.WithKeys("v"),
@@ -100,6 +106,7 @@ func (k *keyMap) updateEnabled(canSave bool, hasQueue bool) {
 	k.Scroll.SetEnabled(hasQueue)
 	k.Play.SetEnabled(hasQueue)
 	k.Remove.SetEnabled(hasQueue)
+	k.Shuffle.SetEnabled(hasQueue)
 	k.Save.SetEnabled(canSave)
 }
 
@@ -110,7 +117,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 
 // FullHelp returns keybindings organized into columns for the expanded help view.
 func (k keyMap) FullHelp() [][]key.Binding {
-	playback := []key.Binding{k.Pause, k.Seek, k.Volume, k.Repeat, k.Visualizer}
+	playback := []key.Binding{k.Pause, k.Seek, k.Volume, k.Repeat, k.Shuffle, k.Visualizer}
 	queue := []key.Binding{k.NextTrack, k.PrevTrack, k.Scroll, k.Play, k.Remove}
 	other := []key.Binding{k.Save, k.Help, k.Quit}
 	return [][]key.Binding{playback, queue, other}

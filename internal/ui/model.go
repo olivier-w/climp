@@ -27,7 +27,8 @@ type Model struct {
 	width      int
 	height     int
 	quitting   bool
-	repeatMode RepeatMode
+	repeatMode  RepeatMode
+	shuffleMode ShuffleMode
 
 	sourcePath  string    // temp file path (empty for local files)
 	sourceTitle string    // title for saved filename
@@ -266,11 +267,15 @@ func (m *Model) rebuildMidCache() {
 		statusText = "paused"
 	}
 	repeatIcon := m.repeatMode.Icon()
+	shuffleIcon := m.shuffleMode.Icon()
 	volStr := renderVolumePercent(m.volume)
 
 	leftText := fmt.Sprintf("%s  %s", statusIcon, statusText)
 	if repeatIcon != "" {
 		leftText += "  " + repeatIcon
+	}
+	if shuffleIcon != "" {
+		leftText += "  " + shuffleIcon
 	}
 	statusLeft := statusStyle.Render(leftText)
 	statusRight := statusStyle.Render(volStr)
@@ -452,6 +457,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "z":
+			if m.queue != nil && m.queue.Len() > 1 {
+				m.shuffleMode = m.shuffleMode.Toggle()
+				if m.shuffleMode == ShuffleOn {
+					m.queue.EnableShuffle()
+				} else {
+					m.queue.DisableShuffle()
+				}
+				m.rebuildMidCache()
+				return m, nil
+			}
+			return m, nil
 		case "n":
 			if m.queue != nil {
 				return m.skipToNext()
@@ -542,6 +559,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.player.Close()
 		return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 
+	case trackFailedMsg:
+		if m.queue != nil {
+			return m.skipToNext()
+		}
+		return m, nil
+
 	case playlistExtractedMsg:
 		return m.handlePlaylistExtracted(msg)
 
@@ -572,33 +595,73 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// skipToNext advances to the next track if available.
-func (m Model) skipToNext() (tea.Model, tea.Cmd) {
-	next := m.queue.Next()
-	if next == nil {
-		if m.repeatMode == RepeatAll {
-			// Wrap to beginning
-			first := m.queue.Track(0)
-			if first != nil && (first.State == queue.Ready || (first.State == queue.Done && first.Path != "")) {
-				m.cleanupOldTracks()
-				m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
-				m.queue.SetCurrentIndex(0)
-				m.queue.SetTrackState(0, queue.Playing)
-				return m.advanceToTrack(first)
-			}
+// findNextPlayable scans forward from the current position for the next non-Failed track.
+// It advances the queue position past any Failed tracks. If wrap is true (RepeatAll),
+// it wraps around and re-shuffles if needed. Returns the track, its original index,
+// and whether one was found.
+func (m *Model) findNextPlayable(wrap bool) (*queue.Track, int, bool) {
+	for range m.queue.Len() {
+		var next *queue.Track
+		var nextIdx int
+		if m.queue.IsShuffled() {
+			next = m.queue.NextShuffled()
+			nextIdx = m.queue.NextDownloadIndex()
+		} else {
+			next = m.queue.Next()
+			nextIdx = m.queue.CurrentIndex() + 1
 		}
+
+		if next == nil {
+			if !wrap {
+				return nil, -1, false
+			}
+			// Wrap around — re-shuffle or scan from index 0
+			wrap = false // only wrap once
+			if m.queue.IsShuffled() {
+				m.queue.EnableShuffle()
+			} else {
+				m.queue.WrapToStart()
+			}
+			continue
+		}
+
+		if next.State == queue.Failed {
+			// Skip past this failed track
+			if m.queue.IsShuffled() {
+				m.queue.AdvanceShuffle()
+			} else {
+				m.queue.Advance()
+			}
+			continue
+		}
+
+		return next, nextIdx, true
+	}
+	return nil, -1, false
+}
+
+// skipToNext advances to the next playable track, skipping over Failed tracks.
+func (m Model) skipToNext() (tea.Model, tea.Cmd) {
+	origIdx := m.queue.CurrentIndex()
+	next, nextIdx, found := m.findNextPlayable(m.repeatMode == RepeatAll)
+	if !found {
 		return m, nil
 	}
+
 	if next.State == queue.Ready || (next.State == queue.Done && next.Path != "") {
 		m.cleanupOldTracks()
-		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
-		m.queue.Advance()
+		m.queue.SetTrackState(origIdx, queue.Done)
+		if m.queue.IsShuffled() {
+			m.queue.AdvanceShuffle()
+		} else {
+			m.queue.Advance()
+		}
 		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Playing)
 		return m.advanceToTrack(m.queue.Current())
 	}
 	if next.State == queue.Downloading {
 		m.transitioning = true
-		m.transitionTarget = m.queue.CurrentIndex() + 1
+		m.transitionTarget = nextIdx
 		m.player.Close()
 		m.syncQueueList()
 		m.rebuildQueueViewCache()
@@ -624,6 +687,7 @@ func (m Model) jumpToSelected() (tea.Model, tea.Cmd) {
 		m.cleanupOldTracks()
 		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
 		m.queue.SetCurrentIndex(targetIdx)
+		m.queue.SetShufflePosition(targetIdx)
 		m.queue.SetTrackState(targetIdx, queue.Playing)
 		return m.advanceToTrack(m.queue.Current())
 	}
@@ -684,6 +748,19 @@ func (m Model) removeSelected() (tea.Model, tea.Cmd) {
 
 // skipToPrevious goes back to the previous track if it's still ready.
 func (m Model) skipToPrevious() (tea.Model, tea.Cmd) {
+	if m.queue.IsShuffled() {
+		if !m.queue.PreviousShuffle() {
+			return m, nil
+		}
+		prev := m.queue.Current()
+		if prev == nil || prev.Path == "" {
+			return m, nil
+		}
+		// Mark old track as done (the one we just left — it's now at shufflePos+1)
+		// We already moved back, so the track after us in shuffle order is the old one.
+		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Playing)
+		return m.advanceToTrack(m.queue.Current())
+	}
 	idx := m.queue.CurrentIndex()
 	if idx <= 0 {
 		return m, nil
@@ -700,34 +777,27 @@ func (m Model) skipToPrevious() (tea.Model, tea.Cmd) {
 
 // handleQueuePlaybackEnd handles playback end when a queue is present.
 func (m Model) handleQueuePlaybackEnd() (tea.Model, tea.Cmd) {
-	next := m.queue.Next()
-	if next != nil {
-		if next.State == queue.Ready {
+	origIdx := m.queue.CurrentIndex()
+	next, nextIdx, found := m.findNextPlayable(m.repeatMode == RepeatAll)
+	if found {
+		if next.State == queue.Ready || (next.State == queue.Done && next.Path != "") {
 			m.cleanupOldTracks()
-			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
-			m.queue.Advance()
+			m.queue.SetTrackState(origIdx, queue.Done)
+			if m.queue.IsShuffled() {
+				m.queue.AdvanceShuffle()
+			} else {
+				m.queue.Advance()
+			}
 			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Playing)
 			return m.advanceToTrack(m.queue.Current())
 		}
 		if next.State == queue.Downloading {
 			m.transitioning = true
-			m.transitionTarget = m.queue.CurrentIndex() + 1
+			m.transitionTarget = nextIdx
 			m.player.Close()
 			m.syncQueueList()
 			m.rebuildQueueViewCache()
 			return m, nil
-		}
-	}
-
-	// No next track
-	if m.repeatMode == RepeatAll && m.queue.Len() > 0 {
-		first := m.queue.Track(0)
-		if first != nil && first.Path != "" {
-			m.cleanupOldTracks()
-			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
-			m.queue.SetCurrentIndex(0)
-			m.queue.SetTrackState(0, queue.Playing)
-			return m.advanceToTrack(m.queue.Current())
 		}
 	}
 
@@ -780,6 +850,7 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (tea.Model, tea.Cmd
 		m.cleanupOldTracks()
 		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
 		m.queue.SetCurrentIndex(m.transitionTarget)
+		m.queue.SetShufflePosition(m.transitionTarget)
 		m.queue.SetTrackState(m.transitionTarget, queue.Playing)
 		m.transitionTarget = -1
 		track := m.queue.Current()
@@ -790,8 +861,10 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (tea.Model, tea.Cmd
 		var err error
 		m.player, err = player.New(track.Path)
 		if err != nil {
-			m.quitting = true
-			return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
+			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Failed)
+			m.syncQueueList()
+			m.rebuildQueueViewCache()
+			return m, func() tea.Msg { return trackFailedMsg{} }
 		}
 		m.elapsed = 0
 		m.duration = m.player.Duration()
@@ -869,6 +942,13 @@ func (m Model) advanceToTrack(track *queue.Track) (tea.Model, tea.Cmd) {
 	var err error
 	m.player, err = player.New(track.Path)
 	if err != nil {
+		// For queue playback, mark the track as failed and try the next one.
+		if m.queue != nil {
+			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Failed)
+			m.syncQueueList()
+			m.rebuildQueueViewCache()
+			return m, func() tea.Msg { return trackFailedMsg{} }
+		}
 		m.quitting = true
 		return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 	}
@@ -926,13 +1006,13 @@ func (m Model) downloadTrackCmd(index int) tea.Cmd {
 	}
 }
 
-// startNextDownload downloads only the immediate next track after current.
+// startNextDownload downloads only the immediate next track in playback order.
 func (m Model) startNextDownload() tea.Cmd {
 	if m.queue == nil || m.downloading >= 0 {
 		return nil
 	}
-	next := m.queue.CurrentIndex() + 1
-	if next >= m.queue.Len() {
+	next := m.queue.NextDownloadIndex()
+	if next < 0 || next >= m.queue.Len() {
 		return nil
 	}
 	t := m.queue.Track(next)

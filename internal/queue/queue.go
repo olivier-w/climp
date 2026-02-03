@@ -1,5 +1,7 @@
 package queue
 
+import "math/rand"
+
 // TrackState represents the download/playback state of a track.
 type TrackState int
 
@@ -25,8 +27,11 @@ type Track struct {
 // Queue manages an ordered list of tracks for playlist playback.
 // It is only mutated from Bubbletea's single-threaded Update loop.
 type Queue struct {
-	tracks  []Track
-	current int
+	tracks       []Track
+	current      int
+	shuffleOrder []int // maps shuffle position → original track index
+	shufflePos   int   // current position in shuffleOrder
+	shuffled     bool
 }
 
 // New creates a Queue from the given tracks.
@@ -101,6 +106,12 @@ func (q *Queue) SetCurrentIndex(i int) {
 	}
 }
 
+// WrapToStart positions the queue so that Next() returns track 0
+// and Advance() moves to track 0. Used for RepeatAll wrap-around.
+func (q *Queue) WrapToStart() {
+	q.current = -1
+}
+
 // SetTrackState sets the state of the track at the given index.
 func (q *Queue) SetTrackState(i int, state TrackState) {
 	if i >= 0 && i < len(q.tracks) {
@@ -151,6 +162,33 @@ func (q *Queue) Remove(i int) bool {
 	if i < q.current {
 		q.current--
 	}
+	// Maintain shuffle order if active
+	if q.shuffled {
+		newOrder := make([]int, 0, len(q.shuffleOrder))
+		newPos := q.shufflePos
+		for j, idx := range q.shuffleOrder {
+			if idx == i {
+				// Remove this entry
+				if j < q.shufflePos {
+					newPos--
+				}
+				continue
+			}
+			adjusted := idx
+			if idx > i {
+				adjusted--
+			}
+			newOrder = append(newOrder, adjusted)
+		}
+		q.shuffleOrder = newOrder
+		q.shufflePos = newPos
+		if q.shufflePos < 0 {
+			q.shufflePos = 0
+		}
+		if q.shufflePos >= len(q.shuffleOrder) && len(q.shuffleOrder) > 0 {
+			q.shufflePos = len(q.shuffleOrder) - 1
+		}
+	}
 	return true
 }
 
@@ -160,6 +198,100 @@ func (q *Queue) CleanupAll() {
 		if q.tracks[i].Cleanup != nil {
 			q.tracks[i].Cleanup()
 			q.tracks[i].Cleanup = nil
+		}
+	}
+}
+
+// IsShuffled returns whether shuffle mode is active.
+func (q *Queue) IsShuffled() bool {
+	return q.shuffled
+}
+
+// EnableShuffle activates shuffle mode. The current track stays at position 0
+// in the shuffle order; all other indices are randomized via Fisher-Yates.
+func (q *Queue) EnableShuffle() {
+	n := len(q.tracks)
+	if n <= 1 {
+		return
+	}
+	q.shuffled = true
+	q.shuffleOrder = make([]int, 0, n-1)
+	for i := 0; i < n; i++ {
+		if i != q.current {
+			q.shuffleOrder = append(q.shuffleOrder, i)
+		}
+	}
+	// Fisher-Yates shuffle
+	for i := len(q.shuffleOrder) - 1; i > 0; i-- {
+		j := rand.Intn(i + 1)
+		q.shuffleOrder[i], q.shuffleOrder[j] = q.shuffleOrder[j], q.shuffleOrder[i]
+	}
+	// Prepend current track at position 0
+	q.shuffleOrder = append([]int{q.current}, q.shuffleOrder...)
+	q.shufflePos = 0
+}
+
+// DisableShuffle deactivates shuffle mode, keeping the current track.
+func (q *Queue) DisableShuffle() {
+	q.shuffled = false
+	q.shuffleOrder = nil
+	q.shufflePos = 0
+}
+
+// NextShuffled returns the next track in shuffle order, or nil if at the end.
+func (q *Queue) NextShuffled() *Track {
+	if !q.shuffled || q.shufflePos+1 >= len(q.shuffleOrder) {
+		return nil
+	}
+	idx := q.shuffleOrder[q.shufflePos+1]
+	return q.Track(idx)
+}
+
+// AdvanceShuffle moves forward in shuffle order and updates current. Returns false if at end.
+func (q *Queue) AdvanceShuffle() bool {
+	if !q.shuffled || q.shufflePos+1 >= len(q.shuffleOrder) {
+		return false
+	}
+	q.shufflePos++
+	q.current = q.shuffleOrder[q.shufflePos]
+	return true
+}
+
+// PreviousShuffle moves backward in shuffle order and updates current. Returns false if at start.
+func (q *Queue) PreviousShuffle() bool {
+	if !q.shuffled || q.shufflePos <= 0 {
+		return false
+	}
+	q.shufflePos--
+	q.current = q.shuffleOrder[q.shufflePos]
+	return true
+}
+
+// NextDownloadIndex returns the original track index that should be downloaded next
+// (the track after the current one in playback order). Returns -1 if none.
+func (q *Queue) NextDownloadIndex() int {
+	if q.shuffled {
+		if q.shufflePos+1 < len(q.shuffleOrder) {
+			return q.shuffleOrder[q.shufflePos+1]
+		}
+		return -1
+	}
+	next := q.current + 1
+	if next >= len(q.tracks) {
+		return -1
+	}
+	return next
+}
+
+// SetShufflePosition syncs shufflePos when the user jumps to a specific original track index.
+func (q *Queue) SetShufflePosition(originalIdx int) {
+	if !q.shuffled {
+		return
+	}
+	for i, idx := range q.shuffleOrder {
+		if idx == originalIdx {
+			q.shufflePos = i
+			return
 		}
 	}
 }

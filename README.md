@@ -101,7 +101,7 @@ climp https://youtube.com/playlist?list=...
 | z | toggle shuffle (playlist) |
 | n | next track (playlist) |
 | N / p | previous track (playlist) |
-| j / k | scroll queue list (playlist) |
+| up / down | scroll queue list (playlist) |
 | enter | play selected track (playlist) |
 | del / backspace | remove selected track (playlist) |
 | s | save as mp3 (url playback only) |

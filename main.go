@@ -26,7 +26,12 @@ func main() {
 			os.Exit(1)
 		}
 
-		result := finalModel.(ui.BrowserModel).Result()
+		bm, ok := finalModel.(ui.BrowserModel)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Error: unexpected model type from browser\n")
+			os.Exit(1)
+		}
+		result := bm.Result()
 		if result.Cancelled {
 			os.Exit(0)
 		}
@@ -48,7 +53,12 @@ func main() {
 			os.Exit(1)
 		}
 
-		result := finalModel.(ui.DownloadModel).Result()
+		dm, ok := finalModel.(ui.DownloadModel)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "Error: unexpected model type from downloader\n")
+			os.Exit(1)
+		}
+		result := dm.Result()
 		if result.Err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
 			os.Exit(1)

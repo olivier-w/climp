@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // DownloadStatus represents the current state of a download.
@@ -19,6 +20,8 @@ type DownloadStatus struct {
 	Speed     string  // e.g. "1.23MiB/s"
 	ETA       string  // e.g. "00:03"
 }
+
+var errYtdlpNotFound = fmt.Errorf("yt-dlp not found. Install it:\n  Windows: winget install yt-dlp\n  macOS:   brew install yt-dlp\n  Linux:   sudo apt install yt-dlp  (or pip install yt-dlp)")
 
 var downloadLineRe = regexp.MustCompile(
 	`\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\S+)\s+at\s+([\d.]+\S+)\s+ETA\s+(\S+)`,
@@ -35,7 +38,7 @@ func IsURL(arg string) bool {
 func Download(url string, onStatus func(DownloadStatus)) (string, string, func(), error) {
 	ytdlp, err := exec.LookPath("yt-dlp")
 	if err != nil {
-		return "", "", nil, fmt.Errorf("yt-dlp not found. Install it:\n  Windows: winget install yt-dlp\n  macOS:   brew install yt-dlp\n  Linux:   sudo apt install yt-dlp  (or pip install yt-dlp)")
+		return "", "", nil, errYtdlpNotFound
 	}
 
 	tmpDir, err := os.MkdirTemp("", "climp-*")
@@ -83,7 +86,10 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 	titleRead := false
 
 	// Drain stderr in background (phase info like "Extracting", "ExtractAudio")
+	var stderrWg sync.WaitGroup
+	stderrWg.Add(1)
 	go func() {
+		defer stderrWg.Done()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -131,6 +137,8 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 		}
 	}
 
+	stderrWg.Wait()
+
 	if err := cmd.Wait(); err != nil {
 		cleanup()
 		return "", "", nil, fmt.Errorf("yt-dlp failed: %w", err)
@@ -157,7 +165,7 @@ type PlaylistEntry struct {
 func ExtractPlaylist(url string) ([]PlaylistEntry, error) {
 	ytdlp, err := exec.LookPath("yt-dlp")
 	if err != nil {
-		return nil, fmt.Errorf("yt-dlp not found")
+		return nil, errYtdlpNotFound
 	}
 
 	cmd := exec.Command(ytdlp,

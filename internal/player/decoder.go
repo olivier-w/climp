@@ -22,6 +22,69 @@ type audioDecoder interface {
 	ChannelCount() int
 }
 
+// baseDecoder holds shared state and helpers for WAV, FLAC, and OGG decoders.
+// Embed in format-specific decoders to reuse buffer drain, seek, and accessor logic.
+type baseDecoder struct {
+	buf        []byte
+	pos        int64
+	totalBytes int64
+	sampleRate int
+	channels   int
+}
+
+func (b *baseDecoder) Length() int64     { return b.totalBytes }
+func (b *baseDecoder) SampleRate() int   { return b.sampleRate }
+func (b *baseDecoder) ChannelCount() int { return b.channels }
+
+// drainBuf copies buffered leftover data into p. Returns bytes copied and
+// whether there was buffered data to drain.
+func (b *baseDecoder) drainBuf(p []byte) (int, bool) {
+	if len(b.buf) == 0 {
+		return 0, false
+	}
+	n := copy(p, b.buf)
+	b.buf = b.buf[n:]
+	b.pos += int64(n)
+	return n, true
+}
+
+// calcSeekPos computes the clamped byte position for a Seek call.
+func (b *baseDecoder) calcSeekPos(offset int64, whence int) int64 {
+	var newPos int64
+	switch whence {
+	case io.SeekStart:
+		newPos = offset
+	case io.SeekCurrent:
+		newPos = b.pos + offset
+	case io.SeekEnd:
+		newPos = b.totalBytes + offset
+	}
+	if newPos < 0 {
+		newPos = 0
+	}
+	if newPos > b.totalBytes {
+		newPos = b.totalBytes
+	}
+	return newPos
+}
+
+// commitSeek updates state after a successful underlying seek.
+func (b *baseDecoder) commitSeek(newPos int64) {
+	b.buf = nil
+	b.pos = newPos
+}
+
+// bufferOutput copies raw decoded bytes into p and stashes any remainder.
+// Returns the number of bytes written to p.
+func (b *baseDecoder) bufferOutput(p, raw []byte) int {
+	written := copy(p, raw)
+	if written < len(raw) {
+		b.buf = raw[written:]
+	}
+	b.pos += int64(written)
+	return written
+}
+
 // newDecoder detects format by file extension and returns the appropriate decoder.
 func newDecoder(f *os.File) (audioDecoder, error) {
 	ext := strings.ToLower(filepath.Ext(f.Name()))
@@ -64,13 +127,9 @@ func (d *mp3Decoder) ChannelCount() int { return 2 }
 // --- WAV decoder ---
 
 type wavDecoder struct {
+	baseDecoder
 	file         *os.File
-	buf          []byte
-	pos          int64
-	totalBytes   int64
 	pcmStart     int64 // byte offset in file where PCM data begins
-	sampleRate   int
-	channels     int
 	srcBitDepth  int
 	srcFrameSize int64 // bytes per sample frame in source format
 }
@@ -103,22 +162,20 @@ func newWAVDecoder(f *os.File) (*wavDecoder, error) {
 	}
 
 	return &wavDecoder{
+		baseDecoder: baseDecoder{
+			totalBytes: totalBytes,
+			sampleRate: sampleRate,
+			channels:   channels,
+		},
 		file:         f,
-		sampleRate:   sampleRate,
-		channels:     channels,
 		srcBitDepth:  bitDepth,
 		srcFrameSize: srcFrameSize,
-		totalBytes:   totalBytes,
 		pcmStart:     pcmStart,
 	}, nil
 }
 
 func (d *wavDecoder) Read(p []byte) (int, error) {
-	// Drain buffered data first
-	if len(d.buf) > 0 {
-		n := copy(p, d.buf)
-		d.buf = d.buf[n:]
-		d.pos += int64(n)
+	if n, ok := d.drainBuf(p); ok {
 		return n, nil
 	}
 
@@ -171,11 +228,7 @@ func (d *wavDecoder) Read(p []byte) (int, error) {
 		binary.LittleEndian.PutUint16(raw[i*2:], uint16(int16(sample)))
 	}
 
-	written := copy(p, raw)
-	if written < len(raw) {
-		d.buf = raw[written:]
-	}
-	d.pos += int64(written)
+	written := d.bufferOutput(p, raw)
 	if err == io.ErrUnexpectedEOF {
 		err = io.EOF
 	}
@@ -183,21 +236,7 @@ func (d *wavDecoder) Read(p []byte) (int, error) {
 }
 
 func (d *wavDecoder) Seek(offset int64, whence int) (int64, error) {
-	var newPos int64
-	switch whence {
-	case io.SeekStart:
-		newPos = offset
-	case io.SeekCurrent:
-		newPos = d.pos + offset
-	case io.SeekEnd:
-		newPos = d.totalBytes + offset
-	}
-	if newPos < 0 {
-		newPos = 0
-	}
-	if newPos > d.totalBytes {
-		newPos = d.totalBytes
-	}
+	newPos := d.calcSeekPos(offset, whence)
 
 	// Convert output byte position to source byte position
 	outputFrameSize := int64(d.channels) * 2
@@ -208,25 +247,16 @@ func (d *wavDecoder) Seek(offset int64, whence int) (int64, error) {
 		return d.pos, err
 	}
 
-	d.buf = nil
-	d.pos = newPos
+	d.commitSeek(newPos)
 	return newPos, nil
 }
-
-func (d *wavDecoder) Length() int64     { return d.totalBytes }
-func (d *wavDecoder) SampleRate() int   { return d.sampleRate }
-func (d *wavDecoder) ChannelCount() int { return d.channels }
 
 // --- FLAC decoder ---
 
 type flacDecoder struct {
-	stream     *flac.Stream
-	buf        []byte
-	pos        int64
-	totalBytes int64
-	sampleRate int
-	channels   int
-	bps        int
+	baseDecoder
+	stream *flac.Stream
+	bps    int
 }
 
 func newFLACDecoder(f *os.File) (*flacDecoder, error) {
@@ -241,20 +271,18 @@ func newFLACDecoder(f *os.File) (*flacDecoder, error) {
 	totalBytes := totalSamples * int64(channels) * 2 // 16-bit output
 
 	return &flacDecoder{
-		stream:     stream,
-		sampleRate: int(info.SampleRate),
-		channels:   channels,
-		bps:        int(info.BitsPerSample),
-		totalBytes: totalBytes,
+		baseDecoder: baseDecoder{
+			totalBytes: totalBytes,
+			sampleRate: int(info.SampleRate),
+			channels:   channels,
+		},
+		stream: stream,
+		bps:    int(info.BitsPerSample),
 	}, nil
 }
 
 func (d *flacDecoder) Read(p []byte) (int, error) {
-	// Drain buffered data first
-	if len(d.buf) > 0 {
-		n := copy(p, d.buf)
-		d.buf = d.buf[n:]
-		d.pos += int64(n)
+	if n, ok := d.drainBuf(p); ok {
 		return n, nil
 	}
 
@@ -285,30 +313,11 @@ func (d *flacDecoder) Read(p []byte) (int, error) {
 		}
 	}
 
-	written := copy(p, raw)
-	if written < len(raw) {
-		d.buf = raw[written:]
-	}
-	d.pos += int64(written)
-	return written, nil
+	return d.bufferOutput(p, raw), nil
 }
 
 func (d *flacDecoder) Seek(offset int64, whence int) (int64, error) {
-	var newPos int64
-	switch whence {
-	case io.SeekStart:
-		newPos = offset
-	case io.SeekCurrent:
-		newPos = d.pos + offset
-	case io.SeekEnd:
-		newPos = d.totalBytes + offset
-	}
-	if newPos < 0 {
-		newPos = 0
-	}
-	if newPos > d.totalBytes {
-		newPos = d.totalBytes
-	}
+	newPos := d.calcSeekPos(offset, whence)
 
 	bytesPerFrame := int64(d.channels) * 2
 	sampleNum := uint64(newPos / bytesPerFrame)
@@ -317,24 +326,15 @@ func (d *flacDecoder) Seek(offset int64, whence int) (int64, error) {
 		return d.pos, err
 	}
 
-	d.buf = nil
-	d.pos = newPos
+	d.commitSeek(newPos)
 	return newPos, nil
 }
-
-func (d *flacDecoder) Length() int64     { return d.totalBytes }
-func (d *flacDecoder) SampleRate() int   { return d.sampleRate }
-func (d *flacDecoder) ChannelCount() int { return d.channels }
 
 // --- OGG Vorbis decoder ---
 
 type oggDecoder struct {
-	reader     *oggvorbis.Reader
-	buf        []byte
-	pos        int64
-	totalBytes int64
-	sampleRate int
-	channels   int
+	baseDecoder
+	reader *oggvorbis.Reader
 }
 
 func newOGGDecoder(f *os.File) (*oggDecoder, error) {
@@ -348,18 +348,17 @@ func newOGGDecoder(f *os.File) (*oggDecoder, error) {
 	totalBytes := totalSamples * int64(channels) * 2
 
 	return &oggDecoder{
-		reader:     reader,
-		sampleRate: reader.SampleRate(),
-		channels:   channels,
-		totalBytes: totalBytes,
+		baseDecoder: baseDecoder{
+			totalBytes: totalBytes,
+			sampleRate: reader.SampleRate(),
+			channels:   channels,
+		},
+		reader: reader,
 	}, nil
 }
 
 func (d *oggDecoder) Read(p []byte) (int, error) {
-	if len(d.buf) > 0 {
-		n := copy(p, d.buf)
-		d.buf = d.buf[n:]
-		d.pos += int64(n)
+	if n, ok := d.drainBuf(p); ok {
 		return n, nil
 	}
 
@@ -384,40 +383,16 @@ func (d *oggDecoder) Read(p []byte) (int, error) {
 		binary.LittleEndian.PutUint16(raw[i*2:], uint16(int16(s*32767)))
 	}
 
-	written := copy(p, raw)
-	if written < len(raw) {
-		d.buf = raw[written:]
-	}
-	d.pos += int64(written)
-	return written, err
+	return d.bufferOutput(p, raw), err
 }
 
 func (d *oggDecoder) Seek(offset int64, whence int) (int64, error) {
-	var newPos int64
-	switch whence {
-	case io.SeekStart:
-		newPos = offset
-	case io.SeekCurrent:
-		newPos = d.pos + offset
-	case io.SeekEnd:
-		newPos = d.totalBytes + offset
-	}
-	if newPos < 0 {
-		newPos = 0
-	}
-	if newPos > d.totalBytes {
-		newPos = d.totalBytes
-	}
+	newPos := d.calcSeekPos(offset, whence)
 
 	bytesPerFrame := int64(d.channels) * 2
 	samplePos := newPos / bytesPerFrame
 
 	d.reader.SetPosition(samplePos)
-	d.buf = nil
-	d.pos = newPos
+	d.commitSeek(newPos)
 	return newPos, nil
 }
-
-func (d *oggDecoder) Length() int64     { return d.totalBytes }
-func (d *oggDecoder) SampleRate() int   { return d.sampleRate }
-func (d *oggDecoder) ChannelCount() int { return d.channels }

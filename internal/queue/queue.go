@@ -162,34 +162,33 @@ func (q *Queue) Remove(i int) bool {
 	if i < q.current {
 		q.current--
 	}
-	// Maintain shuffle order if active
 	if q.shuffled {
-		newOrder := make([]int, 0, len(q.shuffleOrder))
-		newPos := q.shufflePos
-		for j, idx := range q.shuffleOrder {
-			if idx == i {
-				// Remove this entry
-				if j < q.shufflePos {
-					newPos--
-				}
-				continue
-			}
-			adjusted := idx
-			if idx > i {
-				adjusted--
-			}
-			newOrder = append(newOrder, adjusted)
-		}
-		q.shuffleOrder = newOrder
-		q.shufflePos = newPos
-		if q.shufflePos < 0 {
-			q.shufflePos = 0
-		}
-		if q.shufflePos >= len(q.shuffleOrder) && len(q.shuffleOrder) > 0 {
-			q.shufflePos = len(q.shuffleOrder) - 1
-		}
+		q.rebuildShuffleAfterRemove(i)
 	}
 	return true
+}
+
+// rebuildShuffleAfterRemove rebuilds the shuffle mapping after a track at
+// removedIdx has been spliced out. Filters the removed index, decrements
+// indices above it, and derives shufflePos from where q.current lands.
+func (q *Queue) rebuildShuffleAfterRemove(removedIdx int) {
+	newOrder := make([]int, 0, len(q.shuffleOrder))
+	newPos := 0
+	for _, idx := range q.shuffleOrder {
+		if idx == removedIdx {
+			continue
+		}
+		adjusted := idx
+		if idx > removedIdx {
+			adjusted--
+		}
+		if adjusted == q.current {
+			newPos = len(newOrder)
+		}
+		newOrder = append(newOrder, adjusted)
+	}
+	q.shuffleOrder = newOrder
+	q.shufflePos = newPos
 }
 
 // CleanupAll calls the cleanup function on every track that has one.

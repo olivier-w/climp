@@ -25,7 +25,19 @@ func renderProgressBar(elapsed, total float64, width int) string {
 	filled := int(ratio * float64(barWidth))
 	// Note: filled <= barWidth is guaranteed since ratio is clamped to [0,1].
 
-	bar := strings.Repeat("━", filled) + strings.Repeat("─", barWidth-filled)
+	// Build bar with circle indicator at current position
+	// The circle replaces one character slot to maintain total width
+	var bar string
+	if filled == 0 {
+		// At start: circle at beginning, all unfilled after
+		bar = "●" + strings.Repeat("─", barWidth-1)
+	} else if filled >= barWidth {
+		// At end: all filled before, circle at end
+		bar = strings.Repeat("━", barWidth-1) + "●"
+	} else {
+		// Middle: filled before circle, unfilled after
+		bar = strings.Repeat("━", filled) + "●" + strings.Repeat("─", barWidth-filled-1)
+	}
 	return bar
 }
 

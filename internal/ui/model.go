@@ -26,6 +26,8 @@ const (
 	dirtyBottom
 )
 
+const maxVizHeight = 8 // maximum lines for the visualizer
+
 // Model is the Bubbletea model for the climp TUI.
 type Model struct {
 	player     *player.Player
@@ -54,9 +56,8 @@ type Model struct {
 	// Queue fields
 	queue         *queue.Queue              // nil for single-track playback
 	queueList     list.Model                // bubbles list for upcoming tracks display
-	downloading      int                       // queue index being downloaded, -1 if none
-	dlProgress       downloader.DownloadStatus // progress of background download
-	transitioning    bool                      // waiting for a track to finish downloading
+	downloading      int  // queue index being downloaded, -1 if none
+	transitioning    bool // waiting for a track to finish downloading
 	transitionTarget int                       // queue index we're waiting to play (-1 if not jumping)
 
 	originalURL string // original URL for deferred playlist extraction
@@ -640,12 +641,6 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 	case trackDownloadedMsg:
 		return m.handleTrackDownloaded(msg)
 
-	case trackDownloadProgressMsg:
-		if msg.index == m.downloading {
-			m.dlProgress = msg.status
-		}
-		return m, nil
-
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -776,7 +771,6 @@ func (m Model) jumpToSelected() (Model, tea.Cmd) {
 		m.cleanupOldTracks()
 		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
 		m.queue.SetCurrentIndex(targetIdx)
-		m.queue.SetShufflePosition(targetIdx)
 		m.queue.SetTrackState(targetIdx, queue.Playing)
 		return m.advanceToTrack(m.queue.Current())
 	}
@@ -815,7 +809,13 @@ func (m Model) listIndexToQueueIndex(sel int) int {
 func (m Model) removeSelected() (Model, tea.Cmd) {
 	sel := m.queueList.Index()
 	targetIdx := m.listIndexToQueueIndex(sel)
-	if targetIdx < 0 || targetIdx >= m.queue.Len() || targetIdx == m.queue.CurrentIndex() {
+	if targetIdx < 0 || targetIdx >= m.queue.Len() {
+		return m, nil
+	}
+	if targetIdx == m.queue.CurrentIndex() {
+		m.saveMsg = "Cannot remove currently playing track"
+		m.saveMsgTime = time.Now()
+		m.invalidate(dirtyMid)
 		return m, nil
 	}
 	if !m.queue.Remove(targetIdx) {
@@ -893,16 +893,15 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		if msg.index == m.downloading {
 			m.downloading = -1
 		}
-		// If we were waiting for this track, move on
+		// If we were waiting for this track, try to find another playable track
 		if m.transitioning {
 			m.transitioning = false
-			// Try to skip past the failed track
-			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
-			if m.queue.Advance() {
+			next, _, found := m.findNextPlayable(m.repeatMode == RepeatAll)
+			if found && (next.State == queue.Ready || (next.State == queue.Done && next.Path != "")) {
 				m.invalidate(dirtyQueue)
-				// Start downloading this new next track
-				return m, m.startNextDownload()
+				return m.advanceAndPlay()
 			}
+			// No playable track found — quit
 			m.quitting = true
 			return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 		}
@@ -927,7 +926,6 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		m.cleanupOldTracks()
 		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
 		m.queue.SetCurrentIndex(m.transitionTarget)
-		m.queue.SetShufflePosition(m.transitionTarget)
 		m.queue.SetTrackState(m.transitionTarget, queue.Playing)
 		m.transitionTarget = -1
 		track := m.queue.Current()
@@ -1067,7 +1065,6 @@ func (m Model) downloadTrackCmd(index int) tea.Cmd {
 	}
 	m.queue.SetTrackState(index, queue.Downloading)
 	m.downloading = index
-	m.dlProgress = downloader.DownloadStatus{}
 
 	trackURL := track.URL
 	return func() tea.Msg {
@@ -1103,6 +1100,9 @@ func (m Model) startNextDownload() tea.Cmd {
 
 // cleanupOldTracks frees disk space for tracks 2+ positions behind current.
 func (m Model) cleanupOldTracks() {
+	if m.queue == nil {
+		return
+	}
 	cur := m.queue.CurrentIndex()
 	for i := 0; i < cur-1; i++ {
 		t := m.queue.Track(i)
@@ -1122,8 +1122,10 @@ func (m Model) effectiveWidth() int {
 }
 
 // fixedLines returns the number of lines used by header, mid section, and help text.
+// This is an approximation: header ~3 + mid ~5 + help ~3 = 11. If the layout
+// changes significantly, this value may need adjustment.
 func (m Model) fixedLines() int {
-	return 11 // header ~3 + mid ~5 + help ~3
+	return 11
 }
 
 func (m Model) vizHeight() int {
@@ -1135,8 +1137,8 @@ func (m Model) vizHeight() int {
 	if avail < 2 {
 		avail = 2
 	}
-	if avail > 8 {
-		avail = 8
+	if avail > maxVizHeight {
+		avail = maxVizHeight
 	}
 	return avail
 }

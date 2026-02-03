@@ -23,9 +23,7 @@ func renderProgressBar(elapsed, total float64, width int) string {
 	}
 
 	filled := int(ratio * float64(barWidth))
-	if filled > barWidth {
-		filled = barWidth
-	}
+	// Note: filled <= barWidth is guaranteed since ratio is clamped to [0,1].
 
 	bar := strings.Repeat("━", filled) + strings.Repeat("─", barWidth-filled)
 	return bar

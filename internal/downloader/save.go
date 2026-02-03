@@ -2,7 +2,6 @@ package downloader
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -31,15 +30,13 @@ func SaveFile(srcPath, title string) (string, error) {
 
 	destName := SanitizeFilename(title) + ".mp3"
 
-	if _, err := os.Stat(destName); err == nil {
-		return "", fmt.Errorf("file %q already exists", destName)
-	}
-
 	cmd := exec.Command(ffmpeg,
+		"-n", // never overwrite — fails if file exists (avoids TOCTOU race)
 		"-i", srcPath,
 		"-q:a", "2",
 		destName,
 	)
+	cmd.Stdin = nil
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("ffmpeg failed: %w\n%s", err, output)

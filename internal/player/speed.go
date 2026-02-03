@@ -46,6 +46,8 @@ type speedReader struct {
 	frameSize int // channels * 2 (16-bit samples)
 	speed     SpeedMode
 	buf       []byte // leftover bytes from 0.5x duplication
+	tmpBuf    []byte // reusable read buffer (grow-only)
+	tmpExp    []byte // reusable expanded buffer for 0.5x (grow-only)
 	mu        sync.Mutex
 }
 
@@ -83,7 +85,10 @@ func (sr *speedReader) read2x(p []byte) (int, error) {
 
 	// We need 2x the frames from source
 	srcSize := outFrames * 2 * fs
-	tmp := make([]byte, srcSize)
+	if cap(sr.tmpBuf) < srcSize {
+		sr.tmpBuf = make([]byte, srcSize)
+	}
+	tmp := sr.tmpBuf[:srcSize]
 	n, err := io.ReadFull(sr.source, tmp)
 
 	// Process whatever we got, aligned to frames
@@ -120,13 +125,19 @@ func (sr *speedReader) readHalf(p []byte) (int, error) {
 	// Read half as many frames from source
 	srcFrames := (outFrames + 1) / 2
 	srcSize := srcFrames * fs
-	tmp := make([]byte, srcSize)
+	if cap(sr.tmpBuf) < srcSize {
+		sr.tmpBuf = make([]byte, srcSize)
+	}
+	tmp := sr.tmpBuf[:srcSize]
 	n, err := io.ReadFull(sr.source, tmp)
 
 	srcFramesRead := n / fs
 	// Each source frame becomes 2 output frames
 	totalOut := srcFramesRead * 2 * fs
-	expanded := make([]byte, totalOut)
+	if cap(sr.tmpExp) < totalOut {
+		sr.tmpExp = make([]byte, totalOut)
+	}
+	expanded := sr.tmpExp[:totalOut]
 	for i := 0; i < srcFramesRead; i++ {
 		frame := tmp[i*fs : (i+1)*fs]
 		copy(expanded[i*2*fs:i*2*fs+fs], frame)
@@ -135,7 +146,8 @@ func (sr *speedReader) readHalf(p []byte) (int, error) {
 
 	wrote := copy(p, expanded)
 	if wrote < len(expanded) {
-		sr.buf = expanded[wrote:]
+		// Must copy leftover since expanded references the reusable tmpExp buffer.
+		sr.buf = append(sr.buf[:0], expanded[wrote:]...)
 	}
 
 	if wrote > 0 {

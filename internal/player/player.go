@@ -13,6 +13,8 @@ import (
 
 // countingReader wraps an io.Reader and tracks bytes read.
 // It also copies PCM data into a ring buffer for visualization.
+// It has its own mutex (separate from Player's) because Oto's audio goroutine
+// calls Read() concurrently with UI goroutine calls to Pos().
 type countingReader struct {
 	reader    io.ReadSeeker
 	pos       int64
@@ -55,9 +57,10 @@ type Player struct {
 	volume      float64
 	paused      bool
 	done        chan struct{}
+	stopMon     chan struct{} // signals current monitor goroutine to exit
 	mu          sync.Mutex
 	closed      bool
-	bytesPerSec int
+	bytesPerSec int // immutable after init — safe to read without mutex
 	speed       SpeedMode
 	sampleBuf   *visualizer.RingBuffer
 }
@@ -122,6 +125,7 @@ func New(path string) (*Player, error) {
 		duration:    dur,
 		volume:      0.8,
 		done:        make(chan struct{}),
+		stopMon:     make(chan struct{}),
 		bytesPerSec: bytesPerSec,
 		sampleBuf:   sampleBuf,
 	}
@@ -137,8 +141,16 @@ func New(path string) (*Player, error) {
 }
 
 func (p *Player) monitor() {
-	// Poll until playback finishes or player is closed
+	// Poll until playback finishes, player is closed, or stopMon is signalled.
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
 	for {
+		select {
+		case <-p.stopMon:
+			return
+		case <-ticker.C:
+		}
+
 		p.mu.Lock()
 		if p.closed {
 			p.mu.Unlock()
@@ -153,7 +165,6 @@ func (p *Player) monitor() {
 			close(p.done)
 			return
 		}
-		time.Sleep(200 * time.Millisecond)
 	}
 }
 
@@ -170,6 +181,9 @@ func (p *Player) Restart() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Stop the old monitor goroutine before replacing the done channel.
+	close(p.stopMon)
+
 	p.decoder.Seek(0, io.SeekStart)
 	p.counter.SetPos(0)
 	if p.sampleBuf != nil {
@@ -182,6 +196,7 @@ func (p *Player) Restart() {
 	p.otoPlayer.SetVolume(p.volume)
 
 	p.done = make(chan struct{})
+	p.stopMon = make(chan struct{})
 	p.paused = false
 	p.otoPlayer.Play()
 
@@ -294,9 +309,16 @@ func (p *Player) SetVolume(v float64) {
 // AdjustVolume adjusts volume by delta.
 func (p *Player) AdjustVolume(delta float64) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	v := p.volume + delta
-	p.mu.Unlock()
-	p.SetVolume(v) // SetVolume handles clamping
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	p.volume = v
+	p.otoPlayer.SetVolume(v)
 }
 
 // Speed returns the current playback speed.
@@ -326,11 +348,14 @@ func (p *Player) CycleSpeed() SpeedMode {
 // Samples returns the most recent n int16 samples from the audio stream.
 // Returns interleaved stereo samples (left, right, left, right, ...).
 func (p *Player) Samples(n int) []int16 {
-	if p.sampleBuf == nil {
+	p.mu.Lock()
+	buf := p.sampleBuf
+	p.mu.Unlock()
+	if buf == nil {
 		return nil
 	}
 	// Each int16 sample = 2 bytes
-	raw := p.sampleBuf.Read(n * 2)
+	raw := buf.Read(n * 2)
 	if len(raw) < 2 {
 		return nil
 	}
@@ -350,6 +375,7 @@ func (p *Player) Close() {
 		return
 	}
 	p.closed = true
+	close(p.stopMon)
 	p.otoPlayer.Pause()
 	p.file.Close()
 }

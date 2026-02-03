@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // DownloadStatus represents the current state of a download.
@@ -53,7 +55,9 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 	// Use a fixed output template inside our temp dir.
 	// --print outputs title then final filepath to stdout (one per line).
 	outTemplate := filepath.Join(tmpDir, "audio.%(ext)s")
-	cmd := exec.Command(ytdlp,
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ytdlp,
 		"-x", "--audio-format", "wav",
 		"--no-playlist", // only download the single video, even if URL is a playlist
 		"--newline",     // print progress on new lines instead of \r (needed when piped)
@@ -63,6 +67,7 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 		"-o", outTemplate,
 		url,
 	)
+	cmd.Stdin = nil
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cleanup()
@@ -168,7 +173,9 @@ func ExtractPlaylist(url string) ([]PlaylistEntry, error) {
 		return nil, errYtdlpNotFound
 	}
 
-	cmd := exec.Command(ytdlp,
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ytdlp,
 		"--flat-playlist",
 		"--print", "id",
 		"--print", "title",
@@ -176,26 +183,20 @@ func ExtractPlaylist(url string) ([]PlaylistEntry, error) {
 		"--playlist-end", "50",
 		url,
 	)
+	cmd.Stdin = nil
 
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("yt-dlp playlist extraction failed: %w", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	// Clean up \r from line endings
-	for i := range lines {
-		lines[i] = strings.TrimSpace(lines[i])
-	}
-
-	// Remove empty lines
-	var cleaned []string
-	for _, l := range lines {
-		if l != "" {
-			cleaned = append(cleaned, l)
+	// Split, trim whitespace, and drop empty lines in a single pass.
+	var lines []string
+	for _, l := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
 		}
 	}
-	lines = cleaned
 
 	// Lines come in triples: id, title, url, id, title, url...
 	if len(lines) < 3 {
@@ -229,7 +230,8 @@ func ExtractPlaylist(url string) ([]PlaylistEntry, error) {
 }
 
 // scanCRLF is a bufio.SplitFunc that splits on \n, \r\n, or \r.
-// This is needed because yt-dlp uses \r to overwrite progress lines in place.
+// This is needed because yt-dlp uses bare \r to overwrite progress lines in place.
+// bufio.ScanLines doesn't handle bare \r as a line terminator.
 func scanCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if atEOF && len(data) == 0 {
 		return 0, nil, nil

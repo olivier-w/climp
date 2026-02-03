@@ -47,8 +47,12 @@ func (q *Queue) Current() *Track {
 	return &q.tracks[q.current]
 }
 
-// Next returns a pointer to the next track, or nil if at the end.
+// Next returns a pointer to the next track in playback order, or nil if at the end.
+// When shuffle is active, returns the next track in shuffle order.
 func (q *Queue) Next() *Track {
+	if q.shuffled {
+		return q.NextShuffled()
+	}
 	i := q.current + 1
 	if i >= len(q.tracks) {
 		return nil
@@ -100,9 +104,11 @@ func (q *Queue) CurrentIndex() int {
 }
 
 // SetCurrentIndex sets the current track index directly.
+// Also syncs the shuffle position when shuffle mode is active.
 func (q *Queue) SetCurrentIndex(i int) {
 	if i >= 0 && i < len(q.tracks) {
 		q.current = i
+		q.SetShufflePosition(i)
 	}
 }
 

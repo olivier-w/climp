@@ -23,11 +23,6 @@ type trackDownloadedMsg struct {
 	err     error
 }
 
-type trackDownloadProgressMsg struct {
-	index  int
-	status downloader.DownloadStatus
-}
-
 type playlistExtractedMsg struct {
 	entries []downloader.PlaylistEntry
 	err     error

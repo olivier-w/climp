@@ -14,6 +14,9 @@ import (
 	"github.com/olivier-w/climp/internal/ui"
 )
 
+// supportedExts lists all audio formats the player can handle.
+var supportedExts = map[string]bool{".mp3": true, ".wav": true, ".flac": true, ".ogg": true}
+
 func main() {
 	var arg string
 
@@ -89,10 +92,7 @@ func main() {
 
 		// Check extension
 		ext := strings.ToLower(filepath.Ext(path))
-		switch ext {
-		case ".mp3", ".wav", ".flac", ".ogg":
-			// supported
-		default:
+		if !supportedExts[ext] {
 			fmt.Fprintf(os.Stderr, "Error: unsupported format %s (supported: .mp3, .wav, .flac, .ogg)\n", ext)
 			os.Exit(1)
 		}
@@ -158,14 +158,13 @@ func scanAudioFiles(path string) []string {
 		return nil
 	}
 
-	supported := map[string]bool{".mp3": true, ".wav": true, ".flac": true, ".ogg": true}
 	var files []string
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(e.Name()))
-		if supported[ext] {
+		if supportedExts[ext] {
 			files = append(files, filepath.Join(dir, e.Name()))
 		}
 	}

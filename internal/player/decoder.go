@@ -122,6 +122,7 @@ func (d *mp3Decoder) Seek(offset int64, whence int) (int64, error) {
 }
 func (d *mp3Decoder) Length() int64    { return d.dec.Length() }
 func (d *mp3Decoder) SampleRate() int  { return d.dec.SampleRate() }
+// ChannelCount returns 2 because go-mp3 always decodes to stereo output.
 func (d *mp3Decoder) ChannelCount() int { return 2 }
 
 // --- WAV decoder ---
@@ -257,6 +258,7 @@ type flacDecoder struct {
 	baseDecoder
 	stream *flac.Stream
 	bps    int
+	tmpRaw []byte // reusable output buffer (grow-only)
 }
 
 func newFLACDecoder(f *os.File) (*flacDecoder, error) {
@@ -292,7 +294,11 @@ func (d *flacDecoder) Read(p []byte) (int, error) {
 	}
 
 	nSamples := int(frame.Subframes[0].NSamples)
-	raw := make([]byte, nSamples*d.channels*2)
+	rawSize := nSamples * d.channels * 2
+	if cap(d.tmpRaw) < rawSize {
+		d.tmpRaw = make([]byte, rawSize)
+	}
+	raw := d.tmpRaw[:rawSize]
 
 	for i := 0; i < nSamples; i++ {
 		for ch := 0; ch < d.channels; ch++ {
@@ -334,7 +340,9 @@ func (d *flacDecoder) Seek(offset int64, whence int) (int64, error) {
 
 type oggDecoder struct {
 	baseDecoder
-	reader *oggvorbis.Reader
+	reader     *oggvorbis.Reader
+	tmpSamples []float32 // reusable decode buffer (grow-only)
+	tmpRaw     []byte    // reusable output buffer (grow-only)
 }
 
 func newOGGDecoder(f *os.File) (*oggDecoder, error) {
@@ -363,7 +371,11 @@ func (d *oggDecoder) Read(p []byte) (int, error) {
 	}
 
 	// Read float32 samples (interleaved)
-	samples := make([]float32, len(p)/2)
+	sampleCount := len(p) / 2
+	if cap(d.tmpSamples) < sampleCount {
+		d.tmpSamples = make([]float32, sampleCount)
+	}
+	samples := d.tmpSamples[:sampleCount]
 	n, err := d.reader.Read(samples)
 	if n == 0 {
 		if err != nil {
@@ -372,7 +384,11 @@ func (d *oggDecoder) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 
-	raw := make([]byte, n*2)
+	rawSize := n * 2
+	if cap(d.tmpRaw) < rawSize {
+		d.tmpRaw = make([]byte, rawSize)
+	}
+	raw := d.tmpRaw[:rawSize]
 	for i := 0; i < n; i++ {
 		s := samples[i]
 		if s > 1.0 {

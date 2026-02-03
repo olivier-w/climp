@@ -39,6 +39,9 @@ type DownloadModel struct {
 	width    int
 	quitting bool
 	statusCh chan downloader.DownloadStatus
+	// pendingCleanup stores the cleanup func from a completed download so it
+	// can be returned even if the user cancelled before the msg was processed.
+	pendingCleanup func()
 }
 
 // NewDownload creates a new download model for the given URL.
@@ -57,11 +60,13 @@ func NewDownload(url string) DownloadModel {
 		spinner:  s,
 		progress: p,
 		status:   downloader.DownloadStatus{Phase: "fetching", Percent: -1},
-		statusCh: make(chan downloader.DownloadStatus, 64),
+		statusCh: make(chan downloader.DownloadStatus, 1),
 	}
 }
 
 // Result returns the download result after the program finishes.
+// On cancellation, the Cleanup func is still returned so callers can
+// remove any temp files that were already created.
 func (m DownloadModel) Result() DownloadResult {
 	if m.result != nil {
 		return *m.result
@@ -102,7 +107,10 @@ func (m DownloadModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if isQuit(msg) {
 			m.quitting = true
-			m.result = &DownloadResult{Err: fmt.Errorf("download was cancelled")}
+			m.result = &DownloadResult{
+				Cleanup: m.pendingCleanup,
+				Err:     fmt.Errorf("download was cancelled"),
+			}
 			return m, tea.Quit
 		}
 
@@ -111,6 +119,7 @@ func (m DownloadModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.waitForStatus()
 
 	case downloadDoneMsg:
+		m.pendingCleanup = msg.cleanup
 		m.result = &DownloadResult{
 			Path:    msg.path,
 			Title:   msg.title,

@@ -53,9 +53,10 @@ type Model struct {
 	help help.Model
 
 	// View caches — avoid re-rendering expensive sections every vizTick frame.
-	headerCache    string // header + title + subtitle (changes on track change)
+	headerCache    string // title + subtitle (changes on track change)
+	midCache       string // progress bar + status line (changes on tickMsg)
 	vizCache       string // indented visualizer output (changes on vizTick)
-	bottomCache    string // progress bar + status + queue + help (changes on tickMsg / discrete events)
+	bottomCache    string // queue + help text (changes on discrete events)
 	queueViewCache string // rendered list.Model.View() (changes on queue mutations / key navigation)
 	dotsCache      string // pagination dots
 }
@@ -203,12 +204,10 @@ func (m *Model) rebuildQueueViewCache() {
 	m.rebuildBottomCache()
 }
 
-// rebuildHeaderCache rebuilds the cached header+title+subtitle section.
+// rebuildHeaderCache rebuilds the cached title+subtitle section.
 func (m *Model) rebuildHeaderCache() {
 	var sb strings.Builder
 	sb.WriteString("\n  ")
-	sb.WriteString(headerStyle.Render("climp"))
-	sb.WriteString("\n\n  ")
 	sb.WriteString(titleStyle.Render(m.metadata.Title))
 	sb.WriteByte('\n')
 
@@ -230,9 +229,8 @@ func (m *Model) rebuildHeaderCache() {
 	m.headerCache = sb.String()
 }
 
-// rebuildBottomCache rebuilds the cached section below the visualizer:
-// progress bar, status line, queue display, and help text.
-func (m *Model) rebuildBottomCache() {
+// rebuildMidCache rebuilds the cached progress bar and status line section.
+func (m *Model) rebuildMidCache() {
 	w := m.width
 	if w < 30 {
 		w = 50
@@ -293,30 +291,23 @@ func (m *Model) rebuildBottomCache() {
 		sb.WriteByte('\n')
 	}
 
-	// Queue display — use compact summary when visualizer is active to avoid
-	// large terminal output that causes frame drops.
+	sb.WriteByte('\n')
+	m.midCache = sb.String()
+}
+
+// rebuildBottomCache rebuilds the cached queue display and help text section.
+func (m *Model) rebuildBottomCache() {
+	var sb strings.Builder
+	sb.Grow(256)
+
+	// Queue display — always show full queue list
 	if m.queue != nil && m.queue.Len() > 1 {
+		sb.WriteString(m.queueViewCache)
 		sb.WriteByte('\n')
-		if m.vizEnabled {
-			next := m.queue.CurrentIndex() + 1
-			if next < m.queue.Len() {
-				t := m.queue.Track(next)
-				title := "..."
-				if t != nil {
-					title = t.Title
-				}
-				sb.WriteString("  ")
-				sb.WriteString(helpStyle.Render(fmt.Sprintf("Up next: %s  (%d/%d)", title, next+1, m.queue.Len())))
-				sb.WriteByte('\n')
-			}
-		} else {
-			sb.WriteString(m.queueViewCache)
+		if m.dotsCache != "" {
+			sb.WriteString("  ")
+			sb.WriteString(m.dotsCache)
 			sb.WriteByte('\n')
-			if m.dotsCache != "" {
-				sb.WriteString("  ")
-				sb.WriteString(m.dotsCache)
-				sb.WriteByte('\n')
-			}
 		}
 	}
 
@@ -364,6 +355,7 @@ func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string)
 		help:             h,
 	}
 	m.rebuildHeaderCache()
+	m.rebuildMidCache()
 	m.rebuildBottomCache()
 	return m
 }
@@ -412,7 +404,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case " ":
 			m.player.TogglePause()
 			m.paused = m.player.Paused()
-			m.rebuildBottomCache()
+			m.rebuildMidCache()
 			return m, tea.SetWindowTitle(windowTitle(m.metadata.Title, m.paused))
 		case "left", "h":
 			m.player.Seek(-5 * time.Second)
@@ -421,20 +413,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "+", "=":
 			m.player.AdjustVolume(0.05)
 			m.volume = m.player.Volume()
-			m.rebuildBottomCache()
+			m.rebuildMidCache()
 		case "-":
 			m.player.AdjustVolume(-0.05)
 			m.volume = m.player.Volume()
-			m.rebuildBottomCache()
+			m.rebuildMidCache()
 		case "r":
 			m.repeatMode = m.repeatMode.Next()
-			m.rebuildBottomCache()
+			m.rebuildMidCache()
 			return m, nil
 		case "v":
 			if !m.vizEnabled {
 				m.vizEnabled = true
 				m.vizIndex = 0
-				m.rebuildBottomCache()
+				m.updateQueueHeight()
+				m.rebuildQueueViewCache()
 				return m, vizTickCmd()
 			}
 			m.vizIndex++
@@ -442,7 +435,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.vizEnabled = false
 				m.vizIndex = 0
 				m.vizCache = ""
-				m.rebuildBottomCache()
+				m.updateQueueHeight()
+				m.rebuildQueueViewCache()
 			}
 			return m, nil
 		case "s":
@@ -450,7 +444,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.saving = true
 				m.saveMsg = "Saving..."
 				m.saveMsgTime = time.Now()
-				m.rebuildBottomCache()
+				m.rebuildMidCache()
 				src, title := m.sourcePath, m.sourceTitle
 				return m, func() tea.Msg {
 					destName, err := downloader.SaveFile(src, title)
@@ -478,6 +472,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.help.ShowAll = !m.help.ShowAll
 			m.rebuildBottomCache()
 			return m, nil
+
 		}
 		// Forward navigation keys to queue list
 		if m.queue != nil && m.queue.Len() > 1 {
@@ -497,6 +492,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sourcePath = ""
 		}
 		m.saveMsgTime = time.Now()
+		m.rebuildMidCache()
 		m.rebuildBottomCache()
 		return m, nil
 
@@ -507,7 +503,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.saveMsg != "" && time.Since(m.saveMsgTime) > 5*time.Second {
 			m.saveMsg = ""
 		}
-		m.rebuildBottomCache()
+		m.rebuildMidCache()
 		return m, tickCmd()
 
 	case vizTickMsg:
@@ -564,14 +560,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.Width = msg.Width
 		if m.queue != nil {
 			m.queueList.SetWidth(msg.Width - 4)
-			h := msg.Height - 14 // reserve: 8 lines above queue + 4 below (dots, help) + 2 margin
-			if h < 6 {
-				h = 6
-			}
-			m.queueList.SetHeight(h)
+			m.updateQueueHeight()
 			m.rebuildQueueViewCache()
 		}
 		m.rebuildHeaderCache()
+		m.rebuildMidCache()
 		m.rebuildBottomCache()
 		return m, nil
 	}
@@ -847,11 +840,7 @@ func (m Model) handlePlaylistExtracted(msg playlistExtractedMsg) (tea.Model, tea
 		w = 50
 	}
 	m.queueList = newQueueList(w - 4)
-	h := m.height - 14
-	if h < 6 {
-		h = 6
-	}
-	m.queueList.SetHeight(h)
+	m.updateQueueHeight()
 	m.syncQueueList()
 	m.rebuildQueueViewCache()
 	m.originalURL = "" // extraction done
@@ -973,22 +962,47 @@ func (m Model) effectiveWidth() int {
 	return w - 4 // account for left margin
 }
 
+// fixedLines returns the number of lines used by header, mid section, and help text.
+func (m Model) fixedLines() int {
+	return 11 // header ~3 + mid ~5 + help ~3
+}
+
 func (m Model) vizHeight() int {
-	h := m.height - 14 // reserve space for other UI elements
-	if h < 2 {
-		h = 2
+	avail := m.height - m.fixedLines()
+	// When queue is present, give viz at most half the available space
+	if m.queue != nil && m.queue.Len() > 1 {
+		avail = avail / 2
 	}
-	if h > 8 {
-		h = 8
+	if avail < 2 {
+		avail = 2
 	}
-	return h
+	if avail > 8 {
+		avail = 8
+	}
+	return avail
+}
+
+// updateQueueHeight recalculates the queue list height based on current layout.
+func (m *Model) updateQueueHeight() {
+	if m.queue == nil {
+		return
+	}
+	avail := m.height - m.fixedLines()
+	if m.vizEnabled {
+		// Subtract the visualizer height + 1 blank line
+		avail -= m.vizHeight() + 1
+	}
+	if avail < 6 {
+		avail = 6
+	}
+	m.queueList.SetHeight(avail)
 }
 
 func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	return m.headerCache + m.vizCache + m.bottomCache
+	return m.headerCache + m.midCache + m.vizCache + m.bottomCache
 }
 
 func windowTitle(title string, paused bool) string {

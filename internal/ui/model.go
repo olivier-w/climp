@@ -379,7 +379,7 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{tickCmd(), checkDone(m.player), tea.SetWindowTitle(windowTitle(m.metadata.Title, false))}
 	if m.queue != nil {
 		next := m.queue.Next()
-		if next != nil {
+		if next != nil && next.State == queue.Pending {
 			idx := m.queue.CurrentIndex() + 1
 			cmds = append(cmds, m.downloadTrackCmd(idx))
 		}

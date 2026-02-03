@@ -29,6 +29,7 @@ type Model struct {
 	quitting   bool
 	repeatMode  RepeatMode
 	shuffleMode ShuffleMode
+	speed       player.SpeedMode
 
 	sourcePath  string    // temp file path (empty for local files)
 	sourceTitle string    // title for saved filename
@@ -267,12 +268,16 @@ func (m *Model) rebuildMidCache() {
 		statusText = "paused"
 	}
 	repeatIcon := m.repeatMode.Icon()
+	speedLabel := m.speed.Label()
 	shuffleIcon := m.shuffleMode.Icon()
 	volStr := renderVolumePercent(m.volume)
 
 	leftText := fmt.Sprintf("%s  %s", statusIcon, statusText)
 	if repeatIcon != "" {
 		leftText += "  " + repeatIcon
+	}
+	if speedLabel != "" {
+		leftText += "  " + speedLabel
 	}
 	if shuffleIcon != "" {
 		leftText += "  " + shuffleIcon
@@ -425,6 +430,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuildMidCache()
 		case "r":
 			m.repeatMode = m.repeatMode.Next()
+			m.rebuildMidCache()
+			return m, nil
+		case "x":
+			m.speed = m.player.CycleSpeed()
 			m.rebuildMidCache()
 			return m, nil
 		case "v":
@@ -870,6 +879,9 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (tea.Model, tea.Cmd
 		m.duration = m.player.Duration()
 		m.volume = m.player.Volume()
 		m.paused = false
+		if m.speed != player.Speed1x {
+			m.player.SetSpeed(m.speed)
+		}
 		m.rebuildHeaderCache()
 
 		cmds = append(cmds, checkDone(m.player), tickCmd(), tea.SetWindowTitle(windowTitle(m.metadata.Title, false)))
@@ -958,6 +970,9 @@ func (m Model) advanceToTrack(track *queue.Track) (tea.Model, tea.Cmd) {
 	m.volume = m.player.Volume()
 	m.paused = false
 	m.transitioning = false
+	if m.speed != player.Speed1x {
+		m.player.SetSpeed(m.speed)
+	}
 	m.rebuildHeaderCache()
 	m.syncQueueList()
 	m.rebuildQueueViewCache()

@@ -44,7 +44,7 @@ climp https://youtube.com/playlist?list=PLxxxxxxxx
 climp https://youtube.com/watch?v=xxx&list=RDxxx   # radio/mix
 ```
 
-Use `n`/`p` to skip between tracks, `j`/`k` to scroll the queue, `enter` to jump to a selected track, and `del` to remove a track. Repeat mode (`r`) cycles through off, repeat song, and repeat playlist. Shuffle mode (`z`) randomizes playback order without reordering the queue — the current track stays put and the rest are shuffled. Works with repeat playlist to re-shuffle at the end of each cycle.
+Use `n`/`p` to skip between tracks, `j`/`k` to scroll the queue, `enter` to jump to a selected track, and `del` to remove a track. Repeat mode (`r`) cycles through off, repeat song, and repeat playlist. Shuffle mode (`z`) randomizes playback order without reordering the queue — the current track stays put and the rest are shuffled. Works with repeat playlist to re-shuffle at the end of each cycle. Speed control (`x`) cycles through 1x, 2x, and 0.5x playback speed — pitch shifts proportionally.
 
 ![playlist demo](demo/playlist.gif)
 
@@ -93,10 +93,11 @@ climp https://youtube.com/playlist?list=...
 | space | toggle pause |
 | left / h | seek -5s |
 | right / l | seek +5s |
-| up / k | volume +5% |
-| down / j | volume -5% |
+| + | volume +5% |
+| - | volume -5% |
 | v | cycle visualizer (vu / spectrum / waveform / braille / dense / matrix / hatching / off) |
 | r | toggle repeat (off / song / playlist) |
+| x | cycle speed (1x / 2x / 0.5x) |
 | z | toggle shuffle (playlist) |
 | n | next track (playlist) |
 | N / p | previous track (playlist) |

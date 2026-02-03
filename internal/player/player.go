@@ -48,6 +48,7 @@ type Player struct {
 	file        *os.File
 	decoder     audioDecoder
 	counter     *countingReader
+	sr          *speedReader
 	otoCtx      *oto.Context
 	otoPlayer   *oto.Player
 	duration    time.Duration
@@ -57,6 +58,7 @@ type Player struct {
 	mu          sync.Mutex
 	closed      bool
 	bytesPerSec int
+	speed       SpeedMode
 	sampleBuf   *visualizer.RingBuffer
 }
 
@@ -108,11 +110,14 @@ func New(path string) (*Player, error) {
 	// ~90ms at 44100Hz stereo 16-bit = 44100 * 2 * 2 * 0.09 ≈ 16KB
 	sampleBuf := visualizer.NewRingBuffer(16384)
 	cr := &countingReader{reader: dec, sampleBuf: sampleBuf}
+	frameSize := dec.ChannelCount() * 2
+	sr := newSpeedReader(cr, frameSize)
 
 	p := &Player{
 		file:        f,
 		decoder:     dec,
 		counter:     cr,
+		sr:          sr,
 		otoCtx:      ctx,
 		duration:    dur,
 		volume:      0.8,
@@ -121,7 +126,7 @@ func New(path string) (*Player, error) {
 		sampleBuf:   sampleBuf,
 	}
 
-	p.otoPlayer = ctx.NewPlayer(cr)
+	p.otoPlayer = ctx.NewPlayer(sr)
 	p.otoPlayer.SetVolume(p.volume)
 	p.otoPlayer.Play()
 
@@ -172,7 +177,8 @@ func (p *Player) Restart() {
 	}
 
 	p.otoPlayer.Pause()
-	p.otoPlayer = p.otoCtx.NewPlayer(p.counter)
+	p.sr.clearBuf()
+	p.otoPlayer = p.otoCtx.NewPlayer(p.sr)
 	p.otoPlayer.SetVolume(p.volume)
 
 	p.done = make(chan struct{})
@@ -255,7 +261,8 @@ func (p *Player) Seek(delta time.Duration) {
 	}
 
 	// Recreate the Oto player to flush buffers
-	p.otoPlayer = p.otoCtx.NewPlayer(p.counter)
+	p.sr.clearBuf()
+	p.otoPlayer = p.otoCtx.NewPlayer(p.sr)
 	p.otoPlayer.SetVolume(p.volume)
 	if !wasPaused {
 		p.otoPlayer.Play()
@@ -290,6 +297,30 @@ func (p *Player) AdjustVolume(delta float64) {
 	v := p.volume + delta
 	p.mu.Unlock()
 	p.SetVolume(v) // SetVolume handles clamping
+}
+
+// Speed returns the current playback speed.
+func (p *Player) Speed() SpeedMode {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.speed
+}
+
+// SetSpeed sets the playback speed.
+func (p *Player) SetSpeed(s SpeedMode) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.speed = s
+	p.sr.setSpeed(s)
+}
+
+// CycleSpeed advances to the next speed mode and returns it.
+func (p *Player) CycleSpeed() SpeedMode {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.speed = p.speed.Next()
+	p.sr.setSpeed(p.speed)
+	return p.speed
 }
 
 // Samples returns the most recent n int16 samples from the audio stream.

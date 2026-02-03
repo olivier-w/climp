@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-climp is a standalone CLI media player built with Go. Supports MP3, WAV, FLAC, and OGG Vorbis. Uses a Bubbletea TUI with real-time progress, volume control, ID3 tag display, repeat mode, and shuffle mode. Supports URL playback via yt-dlp with a bubbles-based download progress UI. YouTube playlists and radio URLs are automatically detected — the first track plays immediately while remaining tracks (up to 50) are extracted and downloaded in the background. Local directory playlists are built automatically when playing a file that has sibling audio files. No backend or cloud services.
+climp is a standalone CLI media player built with Go. Supports MP3, WAV, FLAC, and OGG Vorbis. Uses a Bubbletea TUI with real-time progress, volume control, ID3 tag display, repeat mode, shuffle mode, and playback speed control (1x/2x/0.5x). Supports URL playback via yt-dlp with a bubbles-based download progress UI. YouTube playlists and radio URLs are automatically detected — the first track plays immediately while remaining tracks (up to 50) are extracted and downloaded in the background. Local directory playlists are built automatically when playing a file that has sibling audio files. No backend or cloud services.
 
 Usage: `climp <file.mp3|.wav|.flac|.ogg>` or `climp <url|playlist-url>`
 
@@ -22,9 +22,11 @@ If `go` is not on PATH (freshly installed via winget), use `"C:\Program Files\Go
 
 Three main subsystems connected through `main.go`:
 
-**Audio engine** (`internal/player/`) — Oto v3 handles audio output. Format-specific decoders (MP3, WAV, FLAC, OGG) all implement an `audioDecoder` interface in `decoder.go`, providing `Read()`, `Seek()`, `Length()`, `SampleRate()`, and `ChannelCount()`. All decoders normalize output to 16-bit LE PCM. A `countingReader` wraps the decoder to track byte position as Oto reads from it. Position is converted to time via `pos / (sampleRate * channels * bitDepth)`. All Player methods are mutex-protected since Oto runs audio in its own goroutine. The Oto context is initialized once globally via `sync.Once`.
+**Audio engine** (`internal/player/`) — Oto v3 handles audio output. Format-specific decoders (MP3, WAV, FLAC, OGG) all implement an `audioDecoder` interface in `decoder.go`, providing `Read()`, `Seek()`, `Length()`, `SampleRate()`, and `ChannelCount()`. All decoders normalize output to 16-bit LE PCM. The audio pipeline is: decoder → `countingReader` (tracks byte position + feeds visualizer ring buffer) → `speedReader` (frame-level sample dropping/duplication for speed control) → Oto → hardware. Position is converted to time via `pos / (sampleRate * channels * bitDepth)` using the `countingReader` position, which tracks decoder bytes consumed — this stays correct at all speeds since the decoder is consumed faster at 2x and slower at 0.5x in wall time. All Player methods are mutex-protected since Oto runs audio in its own goroutine. The Oto context is initialized once globally via `sync.Once`.
 
-**Seeking** requires recreating the Oto player (no in-place seek support): pause current player, seek the decoder, reset the byte counter, create a new Oto player from the same countingReader. Byte positions must be aligned to 4-byte frame boundaries (stereo 16-bit). `Restart()` uses the same approach to seek to 0 for repeat mode, also resetting the done channel and monitor goroutine.
+**Seeking** requires recreating the Oto player (no in-place seek support): pause current player, seek the decoder, reset the byte counter, clear the speedReader's leftover buffer, create a new Oto player from the speedReader. Byte positions must be aligned to 4-byte frame boundaries (stereo 16-bit). `Restart()` uses the same approach to seek to 0 for repeat mode, also resetting the done channel and monitor goroutine.
+
+**Speed control** (`internal/player/speed.go`) — `SpeedMode` type with three values: `Speed1x` (default), `Speed2x`, `SpeedHalf`. `speedReader` wraps `countingReader` and performs frame-level manipulation: at 2x it reads twice the frames and drops every other one; at 0.5x it reads half the frames and duplicates each (buffering overflow for the next Read call). Pitch shifts proportionally (higher at 2x, lower at 0.5x). Speed persists across track changes — the UI re-applies the current speed to each new player. The `x` key cycles through speeds.
 
 **Downloader** (`internal/downloader/`) — URL detection and yt-dlp integration. `Download()` runs yt-dlp as a subprocess with `--no-playlist` to extract audio as WAV into a temp file (WAV avoids yt-dlp's conversion overhead). Streams yt-dlp output via callback for progress display. Returns a cleanup func for temp file removal. `ExtractPlaylist()` uses `yt-dlp --flat-playlist` to extract video IDs and titles (up to 50 entries) from playlist/radio URLs without downloading. Returns nil for single-video URLs. `save.go` provides `SaveFile()` which converts downloaded WAV to MP3 via ffmpeg on demand (triggered by `s` key).
 
@@ -55,7 +57,7 @@ Three main subsystems connected through `main.go`:
 
 ## Keybindings
 
-Defined in `internal/ui/keys.go`. Vim-style alternatives (h/j/k/l) mirror arrow keys. `r` toggles repeat mode (off/song/playlist). `z` toggles shuffle mode (playlist only). `s` saves the current URL download as MP3 (only available during URL playback). When a playlist queue is active: `n` skips to next track (shuffle-aware, skips Failed tracks), `N`/`p` goes to previous track, `j`/`k` scroll the queue list, `enter` plays the selected track, `del`/`backspace` removes a track from the queue.
+Defined in `internal/ui/keys.go`. Vim-style alternatives (h/j/k/l) mirror arrow keys. `r` toggles repeat mode (off/song/playlist). `x` cycles playback speed (1x/2x/0.5x). `z` toggles shuffle mode (playlist only). `s` saves the current URL download as MP3 (only available during URL playback). When a playlist queue is active: `n` skips to next track (shuffle-aware, skips Failed tracks), `N`/`p` goes to previous track, `j`/`k` scroll the queue list, `enter` plays the selected track, `del`/`backspace` removes a track from the queue.
 
 ## External Tools
 

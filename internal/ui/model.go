@@ -450,6 +450,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionRelease && m.player != nil {
+			m.player.TogglePause()
+			m.paused = m.player.Paused()
+			m.invalidate(dirtyMid)
+			return m, tea.SetWindowTitle(windowTitle(m.metadata.Title, m.paused))
+		}
+		return m, nil
 	case tea.KeyMsg:
 		if isQuit(msg) {
 			m.quitting = true

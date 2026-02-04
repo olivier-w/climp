@@ -56,7 +56,7 @@ Press `v` to cycle through audio-reactive visualizers: VU meter, spectrum, wavef
 
 ## install
 
-### scoop (windows)
+### windows
 
 ```powershell
 scoop bucket add climp https://github.com/olivier-w/scoop-bucket
@@ -76,6 +76,14 @@ git clone https://github.com/olivier-w/climp.git
 cd climp
 go build -o climp .
 ```
+
+### macos
+if you want `climp` to play youtube tracks, while installing `yt-dlp` with `pip`, `ytp-dlp` will fail due to python not being able to verify SSL connections. To fix it, you can install the `certifi` package (where x is your version of Python):
+
+```bash
+/Applications/Python\ 3.xx.xx/Install\ Certificates.command
+```
+
 
 ## usage
 

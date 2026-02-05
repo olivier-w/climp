@@ -30,15 +30,15 @@ const maxVizHeight = 8 // maximum lines for the visualizer
 
 // Model is the Bubbletea model for the climp TUI.
 type Model struct {
-	player     *player.Player
-	metadata   player.Metadata
-	elapsed    time.Duration
-	duration   time.Duration
-	volume     float64
-	paused     bool
-	width      int
-	height     int
-	quitting   bool
+	player      *player.Player
+	metadata    player.Metadata
+	elapsed     time.Duration
+	duration    time.Duration
+	volume      float64
+	paused      bool
+	width       int
+	height      int
+	quitting    bool
 	repeatMode  RepeatMode
 	shuffleMode ShuffleMode
 	speed       player.SpeedMode
@@ -54,11 +54,11 @@ type Model struct {
 	vizEnabled  bool
 
 	// Queue fields
-	queue         *queue.Queue              // nil for single-track playback
-	queueList     list.Model                // bubbles list for upcoming tracks display
-	downloading      int  // queue index being downloaded, -1 if none
-	transitioning    bool // waiting for a track to finish downloading
-	transitionTarget int                       // queue index we're waiting to play (-1 if not jumping)
+	queue            *queue.Queue // nil for single-track playback
+	queueList        list.Model   // bubbles list for upcoming tracks display
+	downloading      int          // queue index being downloaded, -1 if none
+	transitioning    bool         // waiting for a track to finish downloading
+	transitionTarget int          // queue index we're waiting to play (-1 if not jumping)
 
 	originalURL string // original URL for deferred playlist extraction
 
@@ -294,6 +294,9 @@ func (m *Model) rebuildMidCache() {
 	}
 	if shuffleIcon != "" {
 		leftText += "  " + shuffleIcon
+	}
+	if m.vizEnabled && m.vizIndex < len(m.visualizers) {
+		leftText += "  viz:" + m.visualizers[m.vizIndex].Name()
 	}
 	statusLeft := statusStyle.Render(leftText)
 	statusRight := statusStyle.Render(volStr)

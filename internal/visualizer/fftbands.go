@@ -16,6 +16,9 @@ type FFTBands struct {
 	fftSize  int
 	decay    float64
 	bands    []float64
+	real     []float64
+	imag     []float64
+	norm     []float64
 }
 
 // NewFFTBands creates an FFTBands processor with the given band count.
@@ -25,6 +28,9 @@ func NewFFTBands(numBands int) *FFTBands {
 		fftSize:  defaultFFTSize,
 		decay:    defaultDecay,
 		bands:    make([]float64, numBands),
+		real:     make([]float64, defaultFFTSize),
+		imag:     make([]float64, defaultFFTSize),
+		norm:     make([]float64, numBands),
 	}
 }
 
@@ -35,20 +41,21 @@ func (f *FFTBands) Process(samples []int16) {
 		return
 	}
 
-	real := make([]float64, f.fftSize)
-	imag := make([]float64, f.fftSize)
 	for i := range f.fftSize {
 		idx := i * 2
 		if idx+1 < len(samples) {
-			real[i] = float64(samples[idx]+samples[idx+1]) / 65536.0
+			f.real[i] = float64(samples[idx]+samples[idx+1]) / 65536.0
 		} else if idx < len(samples) {
-			real[i] = float64(samples[idx]) / 32768.0
+			f.real[i] = float64(samples[idx]) / 32768.0
+		} else {
+			f.real[i] = 0
 		}
+		f.imag[i] = 0
 		w := 0.5 * (1.0 - math.Cos(2.0*math.Pi*float64(i)/float64(f.fftSize-1)))
-		real[i] *= w
+		f.real[i] *= w
 	}
 
-	fft(real, imag)
+	fft(f.real, f.imag)
 
 	maxBin := f.fftSize / 2
 	for b := range f.numBands {
@@ -67,7 +74,7 @@ func (f *FFTBands) Process(samples []int16) {
 		sum := 0.0
 		count := 0
 		for i := lo; i < hi; i++ {
-			mag := math.Sqrt(real[i]*real[i] + imag[i]*imag[i])
+			mag := math.Sqrt(f.real[i]*f.real[i] + f.imag[i]*f.imag[i])
 			sum += mag
 			count++
 		}
@@ -93,9 +100,8 @@ func (f *FFTBands) NormalizedBands() []float64 {
 			maxVal = v
 		}
 	}
-	out := make([]float64, f.numBands)
 	for i, v := range f.bands {
-		out[i] = v / maxVal
+		f.norm[i] = v / maxVal
 	}
-	return out
+	return f.norm
 }

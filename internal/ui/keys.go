@@ -61,7 +61,7 @@ func newKeyMap() keyMap {
 		),
 		Visualizer: key.NewBinding(
 			key.WithKeys("v"),
-			key.WithHelp("v", "visualizer"),
+			key.WithHelp("v", "viz mode"),
 		),
 		NextTrack: key.NewBinding(
 			key.WithKeys("n"),

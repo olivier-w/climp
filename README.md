@@ -50,7 +50,7 @@ Use `n`/`p` to skip between tracks, `j`/`k` to scroll the queue, `enter` to jump
 
 ## visualizer
 
-Press `v` to cycle through audio-reactive visualizers: VU meter, spectrum, waveform, braille, dense, matrix, and hatching.
+Press `v` to cycle through audio-reactive visualizers: VU meter, spectrum, waterfall spectrogram, waveform, lissajous scope, braille, dense, matrix, and hatching.
 
 ![visualizer demo](demo/visualizer.gif)
 
@@ -103,7 +103,7 @@ climp https://youtube.com/playlist?list=...
 | right / l | seek +5s |
 | + | volume +5% |
 | - | volume -5% |
-| v | cycle visualizer (vu / spectrum / waveform / braille / dense / matrix / hatching / off) |
+| v | cycle visualizer (vu / spectrum / waterfall / waveform / lissajous / braille / dense / matrix / hatching / off) |
 | r | toggle repeat (off / song / playlist) |
 | x | cycle speed (1x / 2x / 0.5x) |
 | z | toggle shuffle (playlist) |

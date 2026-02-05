@@ -12,7 +12,9 @@ func Modes() []Visualizer {
 	return []Visualizer{
 		NewVUMeter(),
 		NewSpectrum(),
+		NewWaterfall(),
 		NewWaveform(),
+		NewLissajous(),
 		NewBraille(),
 		NewDense(),
 		NewMatrix(),

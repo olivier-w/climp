@@ -133,24 +133,39 @@ func renderVUBar(rms, peak float64, width int) string {
 	}
 
 	bar := make([]rune, width)
+	profile := currentColorProfile()
+	var sb strings.Builder
+	color := newANSIState()
 	for i := range width {
 		if i < filled {
-			// Color zones: green, yellow, red
-			if i < width*6/10 {
-				bar[i] = '█'
-			} else if i < width*8/10 {
-				bar[i] = '█'
-			} else {
-				bar[i] = '█'
-			}
+			bar[i] = '█'
 		} else if i == peakPos && peakPos > 0 {
-			bar[i] = '|'
+			bar[i] = '│'
 		} else {
 			bar[i] = '─'
 		}
 	}
 
-	return string(bar)
+	if profile == colorNone {
+		return string(bar)
+	}
+
+	for i, ch := range bar {
+		switch {
+		case ch == '│':
+			color.set(&sb, colorRGB{R: 255, G: 252, B: 210})
+		case i < width*6/10:
+			color.set(&sb, colorRGB{R: 60, G: 224, B: 116})
+		case i < width*8/10:
+			color.set(&sb, colorRGB{R: 240, G: 198, B: 72})
+		default:
+			color.set(&sb, colorRGB{R: 242, G: 96, B: 86})
+		}
+		sb.WriteRune(ch)
+	}
+	color.reset(&sb)
+	return sb.String()
+
 }
 
 func (v *VUMeter) View() string {

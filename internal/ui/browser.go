@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/olivier-w/climp/internal/media"
 )
 
 // BrowserResult holds the outcome of the file browser.
@@ -35,11 +36,11 @@ func (i urlItem) FilterValue() string { return "url" }
 
 // BrowserModel is the Bubbletea model for the file browser screen.
 type BrowserModel struct {
-	list     list.Model
-	input    textinput.Model
-	urlMode  bool
-	result   *BrowserResult
-	err      error
+	list    list.Model
+	input   textinput.Model
+	urlMode bool
+	result  *BrowserResult
+	err     error
 }
 
 // NewBrowser creates a new file browser model scanning the current directory.
@@ -56,7 +57,10 @@ func NewBrowser() BrowserModel {
 		}
 		ext := strings.ToLower(filepath.Ext(e.Name()))
 		switch ext {
-		case ".mp3", ".wav", ".flac", ".ogg":
+		default:
+			if !media.IsSupportedExt(ext) {
+				continue
+			}
 			name := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
 			items = append(items, audioItem{name: name, ext: ext})
 		}

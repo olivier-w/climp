@@ -9,13 +9,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/olivier-w/climp/internal/downloader"
+	"github.com/olivier-w/climp/internal/media"
 	"github.com/olivier-w/climp/internal/player"
 	"github.com/olivier-w/climp/internal/queue"
 	"github.com/olivier-w/climp/internal/ui"
 )
-
-// supportedExts lists all audio formats the player can handle.
-var supportedExts = map[string]bool{".mp3": true, ".wav": true, ".flac": true, ".ogg": true}
 
 func main() {
 	var arg string
@@ -92,8 +90,8 @@ func main() {
 
 		// Check extension
 		ext := strings.ToLower(filepath.Ext(path))
-		if !supportedExts[ext] {
-			fmt.Fprintf(os.Stderr, "Error: unsupported format %s (supported: .mp3, .wav, .flac, .ogg)\n", ext)
+		if !media.IsSupportedExt(ext) {
+			fmt.Fprintf(os.Stderr, "Error: unsupported format %s (supported: %s)\n", ext, media.SupportedExtsList())
 			os.Exit(1)
 		}
 	}
@@ -114,9 +112,10 @@ func main() {
 	// Create and run TUI
 	var model ui.Model
 	if downloader.IsURL(arg) {
-		model = ui.New(p, meta, path, arg)
-	} else if siblings := scanAudioFiles(path); siblings != nil {
-		// Build queue from sibling audio files in the same directory
+		// For URL downloads: mediaPath=path (temp file), sourcePath=path (for saving), originalURL=arg
+		model = ui.New(p, meta, path, path, arg)
+	} else if siblings := scanMediaFiles(path); siblings != nil {
+		// Build queue from sibling media files in the same directory
 		tracks := make([]queue.Track, len(siblings))
 		var startIdx int
 		absPath, _ := filepath.Abs(path)
@@ -133,9 +132,10 @@ func main() {
 		tracks[startIdx].State = queue.Playing
 		q := queue.New(tracks)
 		q.SetCurrentIndex(startIdx)
-		model = ui.NewWithQueue(p, meta, "", q)
+		model = ui.NewWithQueue(p, meta, path, "", q)
 	} else {
-		model = ui.New(p, meta, "", "")
+		// Single local file: mediaPath=path, sourcePath="" (no saving), originalURL=""
+		model = ui.New(p, meta, path, "", "")
 	}
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
@@ -145,9 +145,9 @@ func main() {
 	}
 }
 
-// scanAudioFiles returns all supported audio files in the same directory as path,
+// scanMediaFiles returns all supported media files in the same directory as path,
 // sorted alphabetically (case-insensitive). Returns nil if fewer than 2 files found.
-func scanAudioFiles(path string) []string {
+func scanMediaFiles(path string) []string {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil
@@ -164,7 +164,7 @@ func scanAudioFiles(path string) []string {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(e.Name()))
-		if supportedExts[ext] {
+		if media.IsSupportedExt(ext) {
 			files = append(files, filepath.Join(dir, e.Name()))
 		}
 	}
@@ -179,4 +179,3 @@ func scanAudioFiles(path string) []string {
 
 	return files
 }
-

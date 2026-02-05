@@ -86,6 +86,8 @@ func (b *baseDecoder) bufferOutput(p, raw []byte) int {
 }
 
 // newDecoder detects format by file extension and returns the appropriate decoder.
+// Native Go decoders are preferred for mp3/wav/flac/ogg. All other formats
+// (including video containers like mp4/mkv/webm/mov) fall back to ffmpeg.
 func newDecoder(f *os.File) (audioDecoder, error) {
 	ext := strings.ToLower(filepath.Ext(f.Name()))
 	switch ext {
@@ -98,7 +100,11 @@ func newDecoder(f *os.File) (audioDecoder, error) {
 	case ".ogg":
 		return newOGGDecoder(f)
 	default:
-		return nil, fmt.Errorf("unsupported format: %s", ext)
+		// Try ffmpeg for container/video formats.
+		if !hasFFmpeg() {
+			return nil, fmt.Errorf("unsupported format %s (ffmpeg required for container/video playback)", ext)
+		}
+		return newFFmpegDecoder(f.Name())
 	}
 }
 
@@ -120,8 +126,9 @@ func (d *mp3Decoder) Read(p []byte) (int, error) { return d.dec.Read(p) }
 func (d *mp3Decoder) Seek(offset int64, whence int) (int64, error) {
 	return d.dec.Seek(offset, whence)
 }
-func (d *mp3Decoder) Length() int64    { return d.dec.Length() }
-func (d *mp3Decoder) SampleRate() int  { return d.dec.SampleRate() }
+func (d *mp3Decoder) Length() int64   { return d.dec.Length() }
+func (d *mp3Decoder) SampleRate() int { return d.dec.SampleRate() }
+
 // ChannelCount returns 2 because go-mp3 always decodes to stereo output.
 func (d *mp3Decoder) ChannelCount() int { return 2 }
 

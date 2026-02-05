@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 )
@@ -42,7 +43,12 @@ func currentColorProfile() colorProfile {
 			profile = colorTrueColor
 		case strings.Contains(term, "256color"):
 			profile = colorANSI256
-		case term == "", term == "dumb":
+		case term == "dumb":
+			profile = colorNone
+		case term == "" && runtime.GOOS == "windows":
+			// PowerShell often leaves TERM unset even when ANSI color is supported.
+			profile = colorANSI16
+		case term == "":
 			profile = colorNone
 		default:
 			profile = colorANSI16

@@ -13,7 +13,17 @@ import (
 	"github.com/olivier-w/climp/internal/player"
 	"github.com/olivier-w/climp/internal/queue"
 	"github.com/olivier-w/climp/internal/util"
+	"github.com/olivier-w/climp/internal/video"
 	"github.com/olivier-w/climp/internal/visualizer"
+)
+
+// displayMode tracks what is shown in the display pane (viz/video/off).
+type displayMode uint8
+
+const (
+	displayOff        displayMode = iota
+	displayVisualizer             // cycling through audio visualizers
+	displayVideo                  // terminal video playback
 )
 
 // Dirty flags for cache invalidation.
@@ -52,6 +62,11 @@ type Model struct {
 	visualizers []visualizer.Visualizer
 	vizIndex    int
 	vizEnabled  bool
+
+	// Display mode state machine: off -> visualizer (cycle all modes) -> video -> off.
+	display      displayMode
+	videoSession *video.Session // nil when video is not active
+	mediaPath    string         // actual file path of current media (for video session)
 
 	// Queue fields
 	queue            *queue.Queue // nil for single-track playback
@@ -295,8 +310,13 @@ func (m *Model) rebuildMidCache() {
 	if shuffleIcon != "" {
 		leftText += "  " + shuffleIcon
 	}
-	if m.vizEnabled && m.vizIndex < len(m.visualizers) {
-		leftText += "  viz:" + m.visualizers[m.vizIndex].Name()
+	switch m.display {
+	case displayVisualizer:
+		if m.vizIndex < len(m.visualizers) {
+			leftText += "  viz:" + m.visualizers[m.vizIndex].Name()
+		}
+	case displayVideo:
+		leftText += "  vid"
 	}
 	statusLeft := statusStyle.Render(leftText)
 	statusRight := statusStyle.Render(volStr)
@@ -379,10 +399,11 @@ func (m *Model) flushCaches() {
 	m.dirty = 0
 }
 
-// New creates a new Model. sourcePath is the temp file path for URL downloads
-// (pass "" for local files to disable saving). originalURL is the URL passed on
-// the command line (used for deferred playlist extraction; pass "" for local files).
-func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string) Model {
+// New creates a new Model. mediaPath is the actual file path of the current media.
+// sourcePath is the temp file path for URL downloads (pass "" for local files to
+// disable saving). originalURL is the URL passed on the command line (used for
+// deferred playlist extraction; pass "" for local files).
+func New(p *player.Player, meta player.Metadata, mediaPath, sourcePath, originalURL string) Model {
 	keys := newKeyMap()
 	keys.updateEnabled(sourcePath != "", false)
 	h := help.New()
@@ -398,6 +419,7 @@ func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string)
 		metadata:         meta,
 		duration:         p.Duration(),
 		volume:           p.Volume(),
+		mediaPath:        mediaPath,
 		sourcePath:       sourcePath,
 		sourceTitle:      meta.Title,
 		visualizers:      visualizer.Modes(),
@@ -407,6 +429,10 @@ func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string)
 		keys:             keys,
 		help:             h,
 	}
+	// Auto-enable video display when opening a video-capable source.
+	if m.canVideo() {
+		m, _ = m.enterVideoMode()
+	}
 	m.rebuildHeaderCache()
 	m.rebuildMidCache()
 	m.rebuildBottomCache()
@@ -414,17 +440,22 @@ func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string)
 }
 
 // NewWithQueue creates a Model with playlist queue support.
-func NewWithQueue(p *player.Player, meta player.Metadata, sourcePath string, q *queue.Queue) Model {
-	m := New(p, meta, sourcePath, "")
+// mediaPath is the actual file path of the currently playing track.
+func NewWithQueue(p *player.Player, meta player.Metadata, mediaPath, sourcePath string, q *queue.Queue) Model {
+	m := New(p, meta, mediaPath, sourcePath, "")
 	m.queue = q
 	m.queueList = newQueueList(50)
 	m.syncQueueList()
+	m.updateQueueHeight()
 	m.rebuildQueueViewCache()
 	return m
 }
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{tickCmd(), checkDone(m.player), tea.SetWindowTitle(windowTitle(m.metadata.Title, false))}
+	if m.display == displayVideo && m.videoSession != nil {
+		cmds = append(cmds, videoTickCmd())
+	}
 	if m.queue != nil {
 		next := m.queue.Next()
 		if next != nil && next.State == queue.Pending {
@@ -464,6 +495,7 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if isQuit(msg) {
 			m.quitting = true
+			m.closeVideoSession()
 			if m.player != nil {
 				m.player.Close()
 			}
@@ -480,8 +512,10 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 			return m, tea.SetWindowTitle(windowTitle(m.metadata.Title, m.paused))
 		case "left", "h":
 			m.player.Seek(-5 * time.Second)
+			m.syncVideoSeek()
 		case "right", "l":
 			m.player.Seek(5 * time.Second)
+			m.syncVideoSeek()
 		case "+", "=":
 			m.player.AdjustVolume(0.05)
 			m.volume = m.player.Volume()
@@ -499,22 +533,7 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 			m.invalidate(dirtyMid)
 			return m, nil
 		case "v":
-			if !m.vizEnabled {
-				m.vizEnabled = true
-				m.vizIndex = 0
-				m.updateQueueHeight()
-				m.invalidate(dirtyQueue)
-				return m, vizTickCmd()
-			}
-			m.vizIndex++
-			if m.vizIndex >= len(m.visualizers) {
-				m.vizEnabled = false
-				m.vizIndex = 0
-				m.vizCache = ""
-				m.updateQueueHeight()
-				m.invalidate(dirtyQueue)
-			}
-			return m, nil
+			return m.cycleDisplay()
 		case "s":
 			if m.sourcePath != "" && !m.saving {
 				m.saving = true
@@ -597,10 +616,10 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case vizTickMsg:
-		if m.player == nil {
+		if m.player == nil || m.display != displayVisualizer {
 			return m, nil
 		}
-		if m.vizEnabled && m.vizIndex < len(m.visualizers) {
+		if m.vizIndex < len(m.visualizers) {
 			samples := m.player.Samples(2048)
 			vizHeight := m.vizHeight()
 			m.visualizers[m.vizIndex].Update(samples, m.effectiveWidth(), vizHeight)
@@ -621,6 +640,23 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case videoTickMsg:
+		if m.player == nil || m.display != displayVideo || m.videoSession == nil {
+			return m, nil
+		}
+		rendered, ok, _ := m.videoSession.FrameFor(m.player.Position())
+		if ok {
+			var sb strings.Builder
+			for _, line := range strings.Split(rendered, "\n") {
+				sb.WriteString("  ")
+				sb.WriteString(line)
+				sb.WriteByte('\n')
+			}
+			sb.WriteByte('\n')
+			m.vizCache = sb.String()
+		}
+		return m, videoTickCmd()
+
 	case playbackEndedMsg:
 		if m.player == nil {
 			return m, nil
@@ -628,6 +664,7 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		if m.repeatMode == RepeatOne {
 			m.player.Restart()
 			m.elapsed = 0
+			m.syncVideoSeek() // restart video from beginning too
 			return m, checkDone(m.player)
 		}
 		if m.queue != nil {
@@ -635,6 +672,7 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.elapsed = m.duration
 		m.quitting = true
+		m.closeVideoSession()
 		if m.player != nil {
 			m.player.Close()
 		}
@@ -659,6 +697,10 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		if m.queue != nil {
 			m.queueList.SetWidth(msg.Width - 4)
 			m.updateQueueHeight()
+		}
+		// Resize active video session to match new terminal dimensions.
+		if m.display == displayVideo && m.videoSession != nil && m.player != nil {
+			m.videoSession.Resize(m.effectiveWidth(), m.videoHeight(), m.player.Position())
 		}
 		m.invalidate(dirtyHeader | dirtyMid | dirtyQueue | dirtyBottom)
 		return m, nil
@@ -738,6 +780,7 @@ func (m Model) advanceAndPlay() (Model, tea.Cmd) {
 func (m Model) enterTransitioning(nextIdx int) (Model, tea.Cmd) {
 	m.transitioning = true
 	m.transitionTarget = nextIdx
+	m.closeVideoSession()
 	if m.player != nil {
 		m.player.Close()
 	}
@@ -943,6 +986,7 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		m.metadata = player.Metadata{Title: track.Title}
 		m.sourceTitle = track.Title
 		m.sourcePath = track.Path
+		m.mediaPath = track.Path
 
 		var err error
 		m.player, err = player.New(track.Path)
@@ -958,9 +1002,13 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		if m.speed != player.Speed1x {
 			m.player.SetSpeed(m.speed)
 		}
+		m.resetVideoForTrack()
 		m.invalidate(dirtyHeader)
 
 		cmds = append(cmds, checkDone(m.player), tickCmd(), tea.SetWindowTitle(windowTitle(m.metadata.Title, false)))
+		if m.display == displayVideo && m.videoSession != nil {
+			cmds = append(cmds, videoTickCmd())
+		}
 	}
 
 	// Start downloading next undownloaded track
@@ -1021,6 +1069,7 @@ func (m Model) advanceToTrack(track *queue.Track) (Model, tea.Cmd) {
 		m.metadata = player.Metadata{Title: track.Title}
 	}
 	m.sourceTitle = track.Title
+	m.mediaPath = track.Path
 	if track.URL != "" {
 		m.sourcePath = track.Path
 	} else {
@@ -1050,11 +1099,19 @@ func (m Model) advanceToTrack(track *queue.Track) (Model, tea.Cmd) {
 	}
 	m.invalidate(dirtyHeader | dirtyQueue)
 
+	// Reset video session for the new track.
+	m.resetVideoForTrack()
+
 	cmds := []tea.Cmd{
 		checkDone(m.player),
 		tickCmd(),
 		tea.SetWindowTitle(windowTitle(m.metadata.Title, false)),
 		m.startNextDownload(),
+	}
+
+	// Restart video tick if video display is active.
+	if m.display == displayVideo && m.videoSession != nil {
+		cmds = append(cmds, videoTickCmd())
 	}
 
 	return m, tea.Batch(cmds...)
@@ -1160,14 +1217,160 @@ func (m *Model) updateQueueHeight() {
 		return
 	}
 	avail := m.height - m.fixedLines()
-	if m.vizEnabled {
-		// Subtract the visualizer height + 1 blank line
-		avail -= m.vizHeight() + 1
+	if m.display != displayOff {
+		// Subtract the display pane height + 1 blank line
+		avail -= m.displayPaneHeight() + 1
 	}
 	if avail < 6 {
 		avail = 6
 	}
 	m.queueList.SetHeight(avail)
+}
+
+// displayPaneHeight returns the terminal row height of the active display pane.
+func (m Model) displayPaneHeight() int {
+	switch m.display {
+	case displayVisualizer:
+		return m.vizHeight()
+	case displayVideo:
+		return m.videoHeight()
+	}
+	return 0
+}
+
+// videoHeight computes the terminal row budget for the video pane.
+func (m Model) videoHeight() int {
+	avail := m.height - m.fixedLines()
+	if m.queue != nil && m.queue.Len() > 1 {
+		avail = avail / 2
+	}
+	if avail < 4 {
+		avail = 4
+	}
+	// No hard cap like maxVizHeight — video benefits from more rows.
+	return avail
+}
+
+// syncVideoSeek resyncs the video session to the current audio position after a seek.
+func (m *Model) syncVideoSeek() {
+	if m.display == displayVideo && m.videoSession != nil && m.player != nil {
+		m.videoSession.Seek(m.player.Position())
+	}
+}
+
+// resetVideoForTrack closes and optionally reopens the video session for a new media file.
+// Called on track transitions. If video display is active and the new track has video,
+// a new session is started. Otherwise video display falls back to off gracefully.
+func (m *Model) resetVideoForTrack() {
+	m.closeVideoSession()
+	if m.display != displayVideo {
+		return
+	}
+	// Try to start video on the new track.
+	if m.mediaPath == "" || !video.Available() || !video.HasVideoStream(m.mediaPath) {
+		// New track has no video — turn off video display gracefully.
+		m.display = displayOff
+		m.vizCache = ""
+		m.updateQueueHeight()
+		return
+	}
+	w := m.effectiveWidth()
+	h := m.videoHeight()
+	session, err := video.NewSession(m.mediaPath, 0, w, h)
+	if err != nil {
+		m.display = displayOff
+		m.vizCache = ""
+		m.updateQueueHeight()
+		return
+	}
+	m.videoSession = session
+}
+
+// cycleDisplay implements the v key: off -> visualizer (all modes) -> video -> off.
+func (m Model) cycleDisplay() (Model, tea.Cmd) {
+	switch m.display {
+	case displayOff:
+		// Start visualizer cycle.
+		m.display = displayVisualizer
+		m.vizEnabled = true
+		m.vizIndex = 0
+		m.updateQueueHeight()
+		m.invalidate(dirtyMid | dirtyQueue)
+		return m, vizTickCmd()
+
+	case displayVisualizer:
+		m.vizIndex++
+		if m.vizIndex < len(m.visualizers) {
+			// Still cycling through visualizer modes.
+			m.invalidate(dirtyMid)
+			return m, nil
+		}
+		// Exhausted all visualizer modes — try video.
+		m.vizEnabled = false
+		m.vizIndex = 0
+		m.vizCache = ""
+
+		if m.canVideo() {
+			return m.enterVideoMode()
+		}
+		// No video available — turn off.
+		m.display = displayOff
+		m.updateQueueHeight()
+		m.invalidate(dirtyMid | dirtyQueue)
+		return m, nil
+
+	case displayVideo:
+		// Turn off.
+		m.closeVideoSession()
+		m.display = displayOff
+		m.vizCache = ""
+		m.updateQueueHeight()
+		m.invalidate(dirtyMid | dirtyQueue)
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// canVideo returns true if the current media has a video stream and ffmpeg is available.
+func (m Model) canVideo() bool {
+	if m.mediaPath == "" || !video.Available() {
+		return false
+	}
+	return video.HasVideoStream(m.mediaPath)
+}
+
+// enterVideoMode starts a video session and switches display to video.
+func (m Model) enterVideoMode() (Model, tea.Cmd) {
+	w := m.effectiveWidth()
+	h := m.videoHeight()
+	var startPos time.Duration
+	if m.player != nil {
+		startPos = m.player.Position()
+	}
+
+	session, err := video.NewSession(m.mediaPath, startPos, w, h)
+	if err != nil {
+		// Video init failed — fall through to off.
+		m.display = displayOff
+		m.updateQueueHeight()
+		m.invalidate(dirtyMid | dirtyQueue)
+		return m, nil
+	}
+
+	m.display = displayVideo
+	m.videoSession = session
+	m.updateQueueHeight()
+	m.invalidate(dirtyMid | dirtyQueue)
+	return m, videoTickCmd()
+}
+
+// closeVideoSession releases the video decode session if active.
+func (m *Model) closeVideoSession() {
+	if m.videoSession != nil {
+		m.videoSession.Close()
+		m.videoSession = nil
+	}
 }
 
 func (m Model) View() string {

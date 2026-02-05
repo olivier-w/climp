@@ -29,6 +29,16 @@ var downloadLineRe = regexp.MustCompile(
 	`\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\S+)\s+at\s+([\d.]+\S+)\s+ETA\s+(\S+)`,
 )
 
+// DownloadMode selects what streams to keep from a URL download.
+type DownloadMode uint8
+
+const (
+	// ModeAudioOnly extracts audio and converts to WAV (original behavior).
+	ModeAudioOnly DownloadMode = iota
+	// ModeVideo downloads merged video+audio as mp4 for terminal video playback.
+	ModeVideo
+)
+
 // IsURL returns true if the argument looks like a URL.
 func IsURL(arg string) bool {
 	return strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://")
@@ -38,6 +48,14 @@ func IsURL(arg string) bool {
 // onStatus is called with structured progress data as it becomes available.
 // Returns the path to the temp file, the video title, and a cleanup function.
 func Download(url string, onStatus func(DownloadStatus)) (string, string, func(), error) {
+	return DownloadWithMode(url, ModeAudioOnly, onStatus)
+}
+
+// DownloadWithMode uses yt-dlp to download media from a URL.
+// mode selects audio-only (WAV) or video-preserving (mp4) output.
+// onStatus is called with structured progress data as it becomes available.
+// Returns the path to the temp file, the video title, and a cleanup function.
+func DownloadWithMode(url string, mode DownloadMode, onStatus func(DownloadStatus)) (string, string, func(), error) {
 	ytdlp, err := exec.LookPath("yt-dlp")
 	if err != nil {
 		return "", "", nil, errYtdlpNotFound
@@ -54,19 +72,33 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 
 	// Use a fixed output template inside our temp dir.
 	// --print outputs title then final filepath to stdout (one per line).
-	outTemplate := filepath.Join(tmpDir, "audio.%(ext)s")
+	outTemplate := filepath.Join(tmpDir, "media.%(ext)s")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, ytdlp,
-		"-x", "--audio-format", "wav",
+
+	args := []string{
 		"--no-playlist", // only download the single video, even if URL is a playlist
 		"--newline",     // print progress on new lines instead of \r (needed when piped)
 		"--progress",    // force progress output even when not connected to a TTY
 		"--print", "title",
 		"--print", "after_move:filepath",
 		"-o", outTemplate,
-		url,
-	)
+	}
+
+	switch mode {
+	case ModeVideo:
+		// Download best video+audio merged into mp4.
+		args = append(args,
+			"-f", "bestvideo*+bestaudio/best",
+			"--merge-output-format", "mp4",
+		)
+	default:
+		// Audio-only: extract and convert to WAV.
+		args = append(args, "-x", "--audio-format", "wav")
+	}
+
+	args = append(args, url)
+	cmd := exec.CommandContext(ctx, ytdlp, args...)
 	cmd.Stdin = nil
 	stderr, err := cmd.StderrPipe()
 	if err != nil {

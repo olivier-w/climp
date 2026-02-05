@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/olivier-w/climp/internal/downloader"
+	"github.com/olivier-w/climp/internal/video"
 )
 
 type tickMsg time.Time
@@ -14,6 +15,7 @@ type fileSavedMsg struct {
 	err      error
 }
 type vizTickMsg time.Time
+type videoTickMsg time.Time
 
 type trackDownloadedMsg struct {
 	index   int
@@ -39,5 +41,11 @@ func tickCmd() tea.Cmd {
 func vizTickCmd() tea.Cmd {
 	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
 		return vizTickMsg(t)
+	})
+}
+
+func videoTickCmd() tea.Cmd {
+	return tea.Tick(video.TickInterval(), func(t time.Time) tea.Msg {
+		return videoTickMsg(t)
 	})
 }

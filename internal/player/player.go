@@ -377,5 +377,9 @@ func (p *Player) Close() {
 	p.closed = true
 	close(p.stopMon)
 	p.otoPlayer.Pause()
+	// Close the decoder if it implements io.Closer (e.g. ffmpegDecoder).
+	if closer, ok := p.decoder.(io.Closer); ok {
+		closer.Close()
+	}
 	p.file.Close()
 }

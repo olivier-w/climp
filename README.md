@@ -5,7 +5,12 @@ minimal cli media player.
 ![playback demo](demo/playback.gif)
 
 # format support
+
+### audio
 .mp3, .wav, .flac, .ogg
+
+### video
+.mp4, .mkv, .webm, .mov (requires `ffmpeg` and `ffprobe`)
 
 ## file browser
 
@@ -29,7 +34,7 @@ Requires `yt-dlp` to be installed. climp will show install instructions if it's 
 
 ### local directory playlists
 
-When playing a local file, climp automatically scans the directory for other supported audio files and builds a playlist. All files are sorted alphabetically and playback starts from the file you selected.
+When playing a local file, climp automatically scans the directory for other supported media files and builds a playlist. All files are sorted alphabetically and playback starts from the file you selected.
 
 ```bash
 climp song.mp3   # plays all audio files in the same directory
@@ -53,6 +58,14 @@ Use `n`/`p` to skip between tracks, `j`/`k` to scroll the queue, `enter` to jump
 Press `v` to cycle through audio-reactive visualizers: VU meter, spectrum, waterfall spectrogram, waveform, lissajous scope, braille, dense, matrix, and hatching.
 
 ![visualizer demo](demo/visualizer.gif)
+
+## terminal video
+
+When playing a video file (`.mp4`, `.mkv`, `.webm`, `.mov`), press `v` to cycle past the audio visualizers into video mode. Video frames are rendered as ANSI text in the terminal at 15 fps, synced to audio playback.
+
+Requires `ffmpeg` and `ffprobe` on PATH. Video rendering uses half-block characters with color when the terminal supports it, and falls back to ASCII brightness mapping when `NO_COLOR` is set or on limited terminals.
+
+The display cycle for `v` is: visualizer modes -> video -> off.
 
 ## install
 
@@ -90,6 +103,7 @@ if you want `climp` to play youtube tracks, while installing `yt-dlp` with `pip`
 ```bash
 climp song.mp3
 climp track.flac
+climp video.mp4
 climp https://youtube.com/watch?v=...
 climp https://youtube.com/playlist?list=...
 ```
@@ -103,7 +117,7 @@ climp https://youtube.com/playlist?list=...
 | right / l | seek +5s |
 | + | volume +5% |
 | - | volume -5% |
-| v | cycle visualizer (vu / spectrum / waterfall / waveform / lissajous / braille / dense / matrix / hatching / off) |
+| v | cycle display (vu / spectrum / waterfall / waveform / lissajous / braille / dense / matrix / hatching / video / off) |
 | r | toggle repeat (off / song / playlist) |
 | x | cycle speed (1x / 2x / 0.5x) |
 | z | toggle shuffle (playlist) |

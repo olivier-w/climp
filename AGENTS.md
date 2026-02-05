@@ -6,10 +6,11 @@ This file gives coding agents fast context for working in this repository.
 
 `climp` is a standalone CLI media player written in Go with a Bubble Tea TUI.
 
-- Local playback: MP3, WAV, FLAC, OGG
+- Local playback: MP3, WAV, FLAC, OGG, MP4, MKV, WEBM, MOV
 - URL playback via `yt-dlp`
 - Queue support for local directories and YouTube playlists/radio
 - Real-time visualizers, progress, repeat, shuffle, speed control
+- Terminal video playback via ANSI half-block rendering (requires `ffmpeg`/`ffprobe`)
 
 Entry point: `main.go`
 
@@ -35,10 +36,17 @@ If Go is missing from PATH on Windows, use:
   - decoders normalize to 16-bit LE PCM
   - pipeline: decoder -> countingReader -> speedReader -> Oto
   - `countingReader` also feeds visualizer ring buffer
+  - `ffmpeg_decoder.go`: ffmpeg subprocess fallback for video/container formats
 - `internal/ui/`: Bubble Tea model, key handling, queue UI, download UI
 - `internal/queue/`: playlist ordering, shuffle mapping, navigation
 - `internal/downloader/`: `yt-dlp` integration and playlist extraction
 - `internal/visualizer/`: all visualization modes + FFT analysis
+- `internal/video/`: terminal video rendering pipeline
+  - `probe.go`: ffprobe metadata extraction (resolution, fps, duration)
+  - `session.go`: ffmpeg frame decode subprocess + clock-synced frame delivery
+  - `renderer.go`: RGB24 -> ANSI half-block or ASCII brightness conversion
+  - `palette.go`: color mode detection, ANSI escape generation
+- `internal/media/`: shared media type detection and extension helpers
 
 ## Visualizer Context
 
@@ -77,7 +85,8 @@ Notes:
 ## External Tools
 
 - `yt-dlp`: URL playback and playlist extraction
-- `ffmpeg`: save current URL stream to MP3 (`s` key)
+- `ffmpeg`: save current URL stream to MP3 (`s` key), video frame decoding, container audio extraction
+- `ffprobe`: video metadata probing (resolution, fps, duration)
 
 ## Platform Notes
 

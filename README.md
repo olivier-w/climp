@@ -24,6 +24,7 @@ climp https://youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
 Requires `yt-dlp` to be installed. climp will show install instructions if it's missing. Downloads as WAV for faster processing — press `s` during playback to save as MP3 (requires `ffmpeg`).
+If yt-dlp shows no activity for 15 seconds, climp fails fast instead of hanging. Some live radio URLs may fail with a "live radio stream not supported yet" error.
 
 ![url playback demo](demo/url-fixed.gif)
 

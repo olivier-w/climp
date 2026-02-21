@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -916,6 +917,9 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		if msg.index == m.downloading {
 			m.downloading = -1
 		}
+		m.saveMsg = downloadErrorSummary(msg.err)
+		m.saveMsgTime = time.Now()
+		m.invalidate(dirtyMid)
 		// If we were waiting for this track, try to find another playable track
 		if m.transitioning {
 			m.transitioning = false
@@ -1149,6 +1153,19 @@ func (m Model) effectiveWidth() int {
 // changes significantly, this value may need adjustment.
 func (m Model) fixedLines() int {
 	return 11
+}
+
+func downloadErrorSummary(err error) string {
+	switch {
+	case errors.Is(err, downloader.ErrNoActivityTimeout):
+		return "Download timed out (15s no activity)"
+	case errors.Is(err, downloader.ErrLiveStreamNotSupported):
+		return "Live radio stream not supported yet"
+	case errors.Is(err, downloader.ErrUnsupportedScheme):
+		return "Unsupported URL scheme (http/https only)"
+	default:
+		return "Download failed"
+	}
 }
 
 func (m Model) vizHeight() int {

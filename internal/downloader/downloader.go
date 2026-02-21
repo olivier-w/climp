@@ -3,7 +3,9 @@ package downloader
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,6 +28,31 @@ type DownloadStatus struct {
 
 var errYtdlpNotFound = fmt.Errorf("yt-dlp not found. Install it:\n  Windows: winget install yt-dlp\n  macOS:   brew install yt-dlp\n  Linux:   sudo apt install yt-dlp  (or pip install yt-dlp)")
 
+var (
+	// ErrNoActivityTimeout indicates yt-dlp made no meaningful progress for too long.
+	ErrNoActivityTimeout = errors.New("timed out after 15s with no download progress")
+	// ErrLiveStreamNotSupported indicates a likely live radio stream URL.
+	ErrLiveStreamNotSupported = errors.New("live radio stream not supported yet")
+	// ErrUnsupportedScheme indicates a non-http(s) URL was provided.
+	ErrUnsupportedScheme = errors.New("unsupported URL scheme (only http/https)")
+)
+
+const (
+	maxDownloadDuration  = 5 * time.Minute
+	fetchIdleTimeout     = 15 * time.Second
+	downloadIdleTimeout  = 15 * time.Second
+	convertIdleTimeout   = 30 * time.Second
+	noActivityRetryCount = 0
+)
+
+type downloadPhase uint8
+
+const (
+	phaseFetching downloadPhase = iota
+	phaseDownloading
+	phaseConverting
+)
+
 var downloadLineRe = regexp.MustCompile(
 	`\[download\]\s+([\d.]+)%\s+of\s+~?\s*([\d.]+\S+)\s+at\s+([\d.]+\S+)\s+ETA\s+(\S+)`,
 )
@@ -38,6 +66,31 @@ func IsURL(arg string) bool {
 // onStatus is called with structured progress data as it becomes available.
 // Returns the path to the temp file, the video title, and a cleanup function.
 func Download(url string, onStatus func(DownloadStatus)) (string, string, func(), error) {
+	normalizedURL, err := normalizeAndValidateURL(url)
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	var lastErr error
+	for attempt := 0; attempt <= noActivityRetryCount; attempt++ {
+		path, title, cleanup, err := downloadOnce(normalizedURL, onStatus)
+		if err == nil {
+			return path, title, cleanup, nil
+		}
+		lastErr = err
+		if errors.Is(err, ErrNoActivityTimeout) && attempt < noActivityRetryCount {
+			continue
+		}
+		break
+	}
+
+	if errors.Is(lastErr, ErrNoActivityTimeout) && isLikelyLiveManifestURL(normalizedURL) {
+		return "", "", nil, ErrLiveStreamNotSupported
+	}
+	return "", "", nil, lastErr
+}
+
+func downloadOnce(url string, onStatus func(DownloadStatus)) (string, string, func(), error) {
 	ytdlp, err := exec.LookPath("yt-dlp")
 	if err != nil {
 		return "", "", nil, errYtdlpNotFound
@@ -55,7 +108,7 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 	// Use a fixed output template inside our temp dir.
 	// --print outputs title then final filepath to stdout (one per line).
 	outTemplate := filepath.Join(tmpDir, "audio.%(ext)s")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), maxDownloadDuration)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, ytdlp,
 		"-x", "--audio-format", "wav",
@@ -89,6 +142,82 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 	// final filepath, and possibly more [download] lines all to stdout.
 	var title, finalPath string
 	titleRead := false
+	var stateMu sync.Mutex
+	lastActivity := time.Now()
+	phase := phaseFetching
+	phaseSince := time.Now()
+	downloadProgressSeen := false
+	var timedOut atomic.Bool
+
+	touch := func() {
+		stateMu.Lock()
+		lastActivity = time.Now()
+		stateMu.Unlock()
+	}
+	setPhase := func(p downloadPhase) {
+		stateMu.Lock()
+		if phase != p {
+			phaseSince = time.Now()
+			if p == phaseDownloading {
+				downloadProgressSeen = false
+			}
+		}
+		phase = p
+		lastActivity = time.Now()
+		stateMu.Unlock()
+	}
+	markDownloadProgress := func() {
+		stateMu.Lock()
+		downloadProgressSeen = true
+		lastActivity = time.Now()
+		stateMu.Unlock()
+	}
+
+	watchDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watchDone:
+				return
+			case <-ticker.C:
+				stateMu.Lock()
+				idle := time.Since(lastActivity)
+				curPhase := phase
+				inPhaseFor := time.Since(phaseSince)
+				progressSeen := downloadProgressSeen
+				stateMu.Unlock()
+
+				// Keep startup strict: if we're still in fetching for 15s, fail fast.
+				if curPhase == phaseFetching && inPhaseFor > fetchIdleTimeout {
+					timedOut.Store(true)
+					cancel()
+					return
+				}
+				// If we're in downloading but never got measurable progress, fail fast.
+				if curPhase == phaseDownloading && !progressSeen && inPhaseFor > downloadIdleTimeout {
+					timedOut.Store(true)
+					cancel()
+					return
+				}
+
+				limit := fetchIdleTimeout
+				switch curPhase {
+				case phaseDownloading:
+					limit = downloadIdleTimeout
+				case phaseConverting:
+					limit = convertIdleTimeout
+				}
+				if idle > limit {
+					timedOut.Store(true)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	defer close(watchDone)
 
 	// Drain stderr in background (phase info like "Extracting", "ExtractAudio")
 	var stderrWg sync.WaitGroup
@@ -98,12 +227,15 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
+			touch()
 			switch {
 			case strings.Contains(line, "Extracting") || strings.Contains(line, "Downloading webpage"):
+				setPhase(phaseFetching)
 				if onStatus != nil {
 					onStatus(DownloadStatus{Phase: "fetching", Percent: -1})
 				}
 			case strings.Contains(line, "ExtractAudio"):
+				setPhase(phaseConverting)
 				if onStatus != nil {
 					onStatus(DownloadStatus{Phase: "converting", Percent: -1})
 				}
@@ -115,17 +247,20 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 	scanner := bufio.NewScanner(stdout)
 	scanner.Split(scanCRLF)
 	for scanner.Scan() {
+		touch()
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
 
-		if strings.Contains(line, "[download]") && strings.Contains(line, "%") {
+		if strings.Contains(line, "[download]") {
+			setPhase(phaseDownloading)
 			if onStatus != nil {
 				status := DownloadStatus{Phase: "downloading", Percent: -1}
 				if m := downloadLineRe.FindStringSubmatch(line); m != nil {
 					if pct, err := strconv.ParseFloat(m[1], 64); err == nil {
 						status.Percent = pct / 100.0
+						markDownloadProgress()
 					}
 					status.TotalSize = m[2]
 					status.Speed = m[3]
@@ -146,6 +281,9 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 
 	if err := cmd.Wait(); err != nil {
 		cleanup()
+		if timedOut.Load() {
+			return "", "", nil, ErrNoActivityTimeout
+		}
 		return "", "", nil, fmt.Errorf("yt-dlp failed: %w", err)
 	}
 
@@ -155,6 +293,46 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 	}
 
 	return finalPath, title, cleanup, nil
+}
+
+func normalizeAndValidateURL(raw string) (string, error) {
+	u := strings.TrimSpace(raw)
+	if len(u) >= 2 {
+		if (u[0] == '"' && u[len(u)-1] == '"') || (u[0] == '\'' && u[len(u)-1] == '\'') {
+			u = strings.TrimSpace(u[1 : len(u)-1])
+		}
+	}
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", ErrUnsupportedScheme
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("invalid URL: missing host")
+	}
+	return u, nil
+}
+
+func isLikelyLiveManifestURL(u string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(u))
+	if err != nil {
+		return false
+	}
+	path := strings.ToLower(parsed.Path)
+	switch {
+	case strings.HasSuffix(path, ".m3u8"),
+		strings.HasSuffix(path, ".m3u"),
+		strings.Contains(path, "/live"),
+		strings.Contains(path, "/stream"),
+		strings.Contains(strings.ToLower(parsed.RawQuery), "live"),
+		strings.Contains(strings.ToLower(parsed.RawQuery), "stream"):
+		return true
+	default:
+		return false
+	}
 }
 
 // PlaylistEntry represents a single video/track in a playlist.

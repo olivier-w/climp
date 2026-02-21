@@ -9,7 +9,7 @@ func renderProgressBar(elapsed, total float64, width int) string {
 	if width < 10 {
 		width = 10
 	}
-	barWidth := width - 2 // leave some margin
+	barWidth := width
 
 	var ratio float64
 	if total > 0 {

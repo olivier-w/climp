@@ -266,6 +266,8 @@ func (m *Model) rebuildMidCache() {
 	if w < 30 {
 		w = 50
 	}
+	// Right-aligned rows in this section should share the same visual edge
+	// (computed from w) so progress-duration, LIVE, and volume stay flush.
 
 	var sb strings.Builder
 	sb.Grow(256)

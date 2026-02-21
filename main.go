@@ -47,28 +47,45 @@ func main() {
 	}
 
 	var path string
+	var sourcePath string
+	var originalURL string
 	var meta player.Metadata
+	var p *player.Player
 	if downloader.IsURL(arg) {
-		result, err := downloadURL(arg)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+		openedLive := false
+		if downloader.IsLiveBySuffix(arg) {
+			var err error
+			p, err = player.NewStream(arg)
+			if err == nil {
+				openedLive = true
+				meta = player.Metadata{Title: arg}
+				metaSet = true
+			}
 		}
-		if result.Err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
-			os.Exit(1)
-		}
-		if result.Cleanup != nil {
-			defer result.Cleanup()
-		}
-		path = result.Path
+		if !openedLive {
+			result, err := downloadURL(arg)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if result.Err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
+				os.Exit(1)
+			}
+			if result.Cleanup != nil {
+				defer result.Cleanup()
+			}
+			path = result.Path
+			sourcePath = result.Path
+			originalURL = arg
 
-		if result.Title != "" {
-			meta = player.Metadata{Title: result.Title}
-		} else {
-			meta = player.ReadMetadata(path)
+			if result.Title != "" {
+				meta = player.Metadata{Title: result.Title}
+			} else {
+				meta = player.ReadMetadata(path)
+			}
+			metaSet = true
 		}
-		metaSet = true
 	} else {
 		path = arg
 
@@ -105,6 +122,24 @@ func main() {
 				}
 				if e.URL == "" {
 					continue
+				}
+
+				if downloader.IsLiveBySuffix(e.URL) {
+					sp, err := player.NewStream(e.URL)
+					if err != nil {
+						continue
+					}
+					p = sp
+					playlistStartCleanup = nil
+					path = ""
+					playlistSourcePath = ""
+					meta = player.Metadata{Title: e.Title}
+					if meta.Title == "" {
+						meta.Title = e.URL
+					}
+					metaSet = true
+					playlistStartIdx = i
+					break
 				}
 
 				result, err := downloadURL(e.URL)
@@ -148,17 +183,20 @@ func main() {
 	}
 
 	// Create audio player
-	p, err := player.New(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating player: %v\n", err)
-		os.Exit(1)
+	if p == nil {
+		var err error
+		p, err = player.New(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating player: %v\n", err)
+			os.Exit(1)
+		}
 	}
 	defer p.Close()
 
 	// Create and run TUI
 	var model ui.Model
 	if downloader.IsURL(arg) {
-		model = ui.New(p, meta, path, arg)
+		model = ui.New(p, meta, sourcePath, originalURL)
 	} else if len(playlistEntries) > 0 {
 		// Build queue from playlist entries in file order.
 		tracks := make([]queue.Track, len(playlistEntries))
@@ -176,7 +214,7 @@ func main() {
 				URL:   e.URL,
 				Path:  e.Path,
 			}
-			if e.URL != "" && e.Path == "" {
+			if e.URL != "" && e.Path == "" && !downloader.IsLiveBySuffix(e.URL) {
 				tracks[i].State = queue.Pending
 			} else {
 				tracks[i].State = queue.Ready

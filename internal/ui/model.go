@@ -262,15 +262,29 @@ func (m *Model) rebuildMidCache() {
 		sb.WriteByte('\n')
 	} else {
 		elapsedStr := timeStyle.Render(util.FormatDuration(m.elapsed))
-		durationStr := timeStyle.Render(util.FormatDuration(m.duration))
-		barWidth := w - len(util.FormatDuration(m.elapsed)) - len(util.FormatDuration(m.duration)) - 6
-		if barWidth < 10 {
-			barWidth = 10
+		if m.player != nil && !m.player.CanSeek() {
+			liveStr := statusStyle.Render("LIVE")
+			// Right-align LIVE to the row edge, matching the seek row's right anchor.
+			gap := w - lipgloss.Width(util.FormatDuration(m.elapsed)) - lipgloss.Width("LIVE") - 4
+			if gap < 2 {
+				gap = 2
+			}
+			sb.WriteString("  ")
+			sb.WriteString(elapsedStr)
+			sb.WriteString(spaces(gap))
+			sb.WriteString(liveStr)
+			sb.WriteByte('\n')
+		} else {
+			durationStr := timeStyle.Render(util.FormatDuration(m.duration))
+			barWidth := w - len(util.FormatDuration(m.elapsed)) - len(util.FormatDuration(m.duration)) - 6
+			if barWidth < 10 {
+				barWidth = 10
+			}
+			bar := renderProgressBar(m.elapsed.Seconds(), m.duration.Seconds(), barWidth)
+			sb.WriteString("  ")
+			sb.WriteString(fmt.Sprintf("%s %s %s", elapsedStr, bar, durationStr))
+			sb.WriteByte('\n')
 		}
-		bar := renderProgressBar(m.elapsed.Seconds(), m.duration.Seconds(), barWidth)
-		sb.WriteString("  ")
-		sb.WriteString(fmt.Sprintf("%s %s %s", elapsedStr, bar, durationStr))
-		sb.WriteByte('\n')
 	}
 
 	sb.WriteByte('\n')
@@ -301,7 +315,7 @@ func (m *Model) rebuildMidCache() {
 	}
 	statusLeft := statusStyle.Render(leftText)
 	statusRight := statusStyle.Render(volStr)
-	gap := w - len(leftText) - len(volStr) - 4
+	gap := w - lipgloss.Width(leftText) - lipgloss.Width(volStr) - 4
 	if gap < 2 {
 		gap = 2
 	}
@@ -338,7 +352,8 @@ func (m *Model) rebuildBottomCache() {
 		}
 	}
 
-	m.keys.updateEnabled(m.sourcePath != "", m.queue != nil)
+	canSeek := m.player != nil && m.player.CanSeek()
+	m.keys.updateEnabled(m.sourcePath != "", m.queue != nil, canSeek)
 	sb.WriteByte('\n')
 	helpView := m.help.View(m.keys)
 	for i, line := range strings.Split(helpView, "\n") {
@@ -385,7 +400,8 @@ func (m *Model) flushCaches() {
 // the command line (used for deferred playlist extraction; pass "" for local files).
 func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string) Model {
 	keys := newKeyMap()
-	keys.updateEnabled(sourcePath != "", false)
+	canSeek := p != nil && p.CanSeek()
+	keys.updateEnabled(sourcePath != "", false, canSeek)
 	h := help.New()
 	h.ShortSeparator = "  "
 	h.Styles.ShortKey = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#999999", Dark: "#666666"})
@@ -480,9 +496,13 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 			m.invalidate(dirtyMid)
 			return m, tea.SetWindowTitle(windowTitle(m.metadata.Title, m.paused))
 		case "left", "h":
-			m.player.Seek(-5 * time.Second)
+			if m.player.CanSeek() {
+				m.player.Seek(-5 * time.Second)
+			}
 		case "right", "l":
-			m.player.Seek(5 * time.Second)
+			if m.player.CanSeek() {
+				m.player.Seek(5 * time.Second)
+			}
 		case "+", "=":
 			m.player.AdjustVolume(0.05)
 			m.volume = m.player.Volume()
@@ -630,7 +650,7 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		if m.player == nil {
 			return m, nil
 		}
-		if m.repeatMode == RepeatOne {
+		if m.repeatMode == RepeatOne && m.player.CanSeek() {
 			m.player.Restart()
 			m.elapsed = 0
 			return m, checkDone(m.player)
@@ -697,7 +717,7 @@ func (m *Model) findNextPlayable(wrap bool) (*queue.Track, int, bool) {
 			// Reset cleaned-up URL tracks to Pending so they can be re-downloaded
 			for i := 0; i < m.queue.Len(); i++ {
 				t := m.queue.Track(i)
-				if t != nil && t.State == queue.Done && t.URL != "" && t.Cleanup == nil {
+				if t != nil && t.State == queue.Done && t.URL != "" && t.Cleanup == nil && !downloader.IsLiveBySuffix(t.URL) {
 					m.queue.SetTrackState(i, queue.Pending)
 					m.queue.SetTrackPath(i, "")
 				}
@@ -765,7 +785,7 @@ func (m Model) skipToNext() (Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if next.State == queue.Ready || (next.State == queue.Done && next.Path != "") {
+	if next.State == queue.Ready || (next.State == queue.Done && (next.Path != "" || downloader.IsLiveBySuffix(next.URL))) {
 		return m.advanceAndPlay()
 	}
 	if next.State == queue.Downloading || next.State == queue.Pending {
@@ -791,7 +811,7 @@ func (m Model) jumpToSelected() (Model, tea.Cmd) {
 	}
 
 	// Track is ready to play immediately.
-	if target.State == queue.Ready || (target.State == queue.Done && target.Path != "") {
+	if target.State == queue.Ready || (target.State == queue.Done && (target.Path != "" || downloader.IsLiveBySuffix(target.URL))) {
 		m.cleanupOldTracks()
 		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
 		m.queue.SetCurrentIndex(targetIdx)
@@ -864,7 +884,7 @@ func (m Model) skipToPrevious() (Model, tea.Cmd) {
 			return m, nil
 		}
 		prev := m.queue.Current()
-		if prev == nil || prev.Path == "" {
+		if prev == nil || (prev.Path == "" && !downloader.IsLiveBySuffix(prev.URL)) {
 			return m, nil
 		}
 		// Mark old track as done (the one we just left — it's now at shufflePos+1)
@@ -877,7 +897,7 @@ func (m Model) skipToPrevious() (Model, tea.Cmd) {
 		return m, nil
 	}
 	prev := m.queue.Track(idx - 1)
-	if prev == nil || prev.Path == "" {
+	if prev == nil || (prev.Path == "" && !downloader.IsLiveBySuffix(prev.URL)) {
 		return m, nil
 	}
 	m.queue.SetTrackState(idx, queue.Done)
@@ -890,7 +910,7 @@ func (m Model) skipToPrevious() (Model, tea.Cmd) {
 func (m Model) handleQueuePlaybackEnd() (Model, tea.Cmd) {
 	next, nextIdx, found := m.findNextPlayable(m.repeatMode == RepeatAll)
 	if found {
-		if next.State == queue.Ready || (next.State == queue.Done && next.Path != "") {
+		if next.State == queue.Ready || (next.State == queue.Done && (next.Path != "" || downloader.IsLiveBySuffix(next.URL))) {
 			return m.advanceAndPlay()
 		}
 		if next.State == queue.Downloading || next.State == queue.Pending {
@@ -924,7 +944,7 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		if m.transitioning {
 			m.transitioning = false
 			next, _, found := m.findNextPlayable(m.repeatMode == RepeatAll)
-			if found && (next.State == queue.Ready || (next.State == queue.Done && next.Path != "")) {
+			if found && (next.State == queue.Ready || (next.State == queue.Done && (next.Path != "" || downloader.IsLiveBySuffix(next.URL)))) {
 				m.invalidate(dirtyQueue)
 				return m.advanceAndPlay()
 			}
@@ -997,11 +1017,15 @@ func (m Model) handlePlaylistExtracted(msg playlistExtractedMsg) (Model, tea.Cmd
 	// Build queue tracks from playlist entries.
 	tracks := make([]queue.Track, len(msg.entries))
 	for i, e := range msg.entries {
+		state := queue.Pending
+		if downloader.IsLiveBySuffix(e.URL) {
+			state = queue.Ready
+		}
 		tracks[i] = queue.Track{
 			ID:    e.ID,
 			Title: e.Title,
 			URL:   e.URL,
-			State: queue.Pending,
+			State: state,
 		}
 	}
 
@@ -1029,22 +1053,30 @@ func (m Model) advanceToTrack(track *queue.Track) (Model, tea.Cmd) {
 	if m.player != nil {
 		m.player.Close()
 	}
+	isLiveURL := track.URL != "" && downloader.IsLiveBySuffix(track.URL)
 
 	// Local files (no URL) have full metadata on disk; URL downloads only have a title.
 	if track.URL == "" && track.Path != "" {
 		m.metadata = player.ReadMetadata(track.Path)
 	} else {
 		m.metadata = player.Metadata{Title: track.Title}
+		if m.metadata.Title == "" {
+			m.metadata.Title = track.URL
+		}
 	}
 	m.sourceTitle = track.Title
-	if track.URL != "" {
+	if track.URL != "" && !isLiveURL {
 		m.sourcePath = track.Path
 	} else {
 		m.sourcePath = ""
 	}
 
 	var err error
-	m.player, err = player.New(track.Path)
+	if isLiveURL {
+		m.player, err = player.NewStream(track.URL)
+	} else {
+		m.player, err = player.New(track.Path)
+	}
 	if err != nil {
 		// For queue playback, mark the track as failed and try the next one.
 		if m.queue != nil {
@@ -1160,7 +1192,7 @@ func downloadErrorSummary(err error) string {
 	case errors.Is(err, downloader.ErrNoActivityTimeout):
 		return "Download timed out (15s no activity)"
 	case errors.Is(err, downloader.ErrLiveStreamNotSupported):
-		return "Live radio stream not supported yet"
+		return "Live stream download fallback timed out"
 	case errors.Is(err, downloader.ErrUnsupportedScheme):
 		return "Unsupported URL scheme (http/https only)"
 	default:

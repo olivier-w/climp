@@ -24,7 +24,8 @@ climp https://youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
 Requires `yt-dlp` to be installed. climp will show install instructions if it's missing. Downloads as WAV for faster processing — press `s` during playback to save as MP3 (requires `ffmpeg`).
-If yt-dlp shows no activity for 15 seconds, climp fails fast instead of hanging. Some live radio URLs may fail with a "live radio stream not supported yet" error.
+Live stream URLs ending in `.m3u8`, `.m3u`, or `.aac` are routed to a live playback path via `ffmpeg` (`ffmpeg -i <url> -> PCM`). If live setup fails, climp falls back to the existing `yt-dlp` download path for that URL. Non-suffix URLs continue to use the `yt-dlp` path directly.
+If yt-dlp shows no activity for 15 seconds, climp fails fast instead of hanging.
 
 ![url playback demo](demo/url-fixed.gif)
 
@@ -115,8 +116,8 @@ climp https://youtube.com/playlist?list=...
 | key | Action |
 |-----|--------|
 | space | toggle pause |
-| left / h | seek -5s |
-| right / l | seek +5s |
+| left / h | seek -5s (disabled for live streams) |
+| right / l | seek +5s (disabled for live streams) |
 | + | volume +5% |
 | - | volume -5% |
 | v | cycle visualizer (vu / spectrum / waterfall / waveform / lissajous / braille / dense / matrix / hatching / off) |
@@ -128,7 +129,7 @@ climp https://youtube.com/playlist?list=...
 | up / down | scroll queue list (playlist) |
 | enter | play selected track (playlist) |
 | del / backspace | remove selected track (playlist) |
-| s | save as mp3 (url playback only) |
+| s | save as mp3 (downloaded URL playback only; disabled for live streams) |
 | q / esc / ctrl+c | quit |
 
 ## license

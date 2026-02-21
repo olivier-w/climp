@@ -23,21 +23,22 @@ func TestNormalizeAndValidateURLUnsupportedScheme(t *testing.T) {
 	}
 }
 
-func TestIsLikelyLiveManifestURL(t *testing.T) {
+func TestIsLiveBySuffix(t *testing.T) {
 	cases := []struct {
 		url  string
 		want bool
 	}{
 		{url: "https://radio.example.com/live.m3u8", want: true},
-		{url: "https://radio.example.com/stream", want: true},
-		{url: "https://cdn.example.com/channel?id=123&live=1", want: true},
+		{url: "https://radio.example.com/live.M3U", want: true},
+		{url: "https://radio.example.com/channel.aac?token=abc", want: true},
 		{url: "https://example.com/track.mp3", want: false},
+		{url: "https://radio.example.com/stream", want: false},
 		{url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", want: false},
 	}
 
 	for _, tc := range cases {
-		if got := isLikelyLiveManifestURL(tc.url); got != tc.want {
-			t.Fatalf("isLikelyLiveManifestURL(%q) = %v, want %v", tc.url, got, tc.want)
+		if got := IsLiveBySuffix(tc.url); got != tc.want {
+			t.Fatalf("IsLiveBySuffix(%q) = %v, want %v", tc.url, got, tc.want)
 		}
 	}
 }

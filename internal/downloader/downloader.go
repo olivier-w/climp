@@ -62,6 +62,19 @@ func IsURL(arg string) bool {
 	return strings.HasPrefix(arg, "http://") || strings.HasPrefix(arg, "https://")
 }
 
+// IsLiveBySuffix returns true for URLs explicitly routed to live stream playback.
+// This intentionally uses a simple suffix-based rule for predictability.
+func IsLiveBySuffix(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	path := strings.ToLower(parsed.Path)
+	return strings.HasSuffix(path, ".m3u8") ||
+		strings.HasSuffix(path, ".m3u") ||
+		strings.HasSuffix(path, ".aac")
+}
+
 // Download uses yt-dlp to download audio from a URL as WAV.
 // onStatus is called with structured progress data as it becomes available.
 // Returns the path to the temp file, the video title, and a cleanup function.
@@ -84,7 +97,7 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 		break
 	}
 
-	if errors.Is(lastErr, ErrNoActivityTimeout) && isLikelyLiveManifestURL(normalizedURL) {
+	if errors.Is(lastErr, ErrNoActivityTimeout) && IsLiveBySuffix(normalizedURL) {
 		return "", "", nil, ErrLiveStreamNotSupported
 	}
 	return "", "", nil, lastErr
@@ -314,25 +327,6 @@ func normalizeAndValidateURL(raw string) (string, error) {
 		return "", fmt.Errorf("invalid URL: missing host")
 	}
 	return u, nil
-}
-
-func isLikelyLiveManifestURL(u string) bool {
-	parsed, err := url.Parse(strings.TrimSpace(u))
-	if err != nil {
-		return false
-	}
-	path := strings.ToLower(parsed.Path)
-	switch {
-	case strings.HasSuffix(path, ".m3u8"),
-		strings.HasSuffix(path, ".m3u"),
-		strings.Contains(path, "/live"),
-		strings.Contains(path, "/stream"),
-		strings.Contains(strings.ToLower(parsed.RawQuery), "live"),
-		strings.Contains(strings.ToLower(parsed.RawQuery), "stream"):
-		return true
-	default:
-		return false
-	}
 }
 
 // PlaylistEntry represents a single video/track in a playlist.

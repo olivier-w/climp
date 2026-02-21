@@ -83,6 +83,8 @@ Press `v` to cycle through audio-reactive visualizers: VU meter, spectrum, water
 
 ## install
 
+Download prebuilt binaries from [GitHub Releases](https://github.com/olivier-w/climp/releases): linux (amd64/arm64), macos (amd64/arm64), windows (amd64).
+
 ### windows
 
 ```powershell
@@ -110,6 +112,19 @@ if you want `climp` to play youtube tracks, while installing `yt-dlp` with `pip`
 ```bash
 /Applications/Python\ 3.xx.xx/Install\ Certificates.command
 ```
+
+### linux troubleshooting (headless/VM)
+
+If playback fails with ALSA errors like `Unknown PCM default` or `cannot find card '0'`, the machine has no usable default audio output device. This is common on headless VMs/containers.
+
+Check detected devices:
+
+```bash
+aplay -l
+aplay -L
+```
+
+Install/enable an audio stack (ALSA/PipeWire/PulseAudio) or run on a machine/session with audio output available.
 
 
 ## usage

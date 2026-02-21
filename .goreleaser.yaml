@@ -1,9 +1,24 @@
 version: 2
 
 builds:
-  - goos:
+  - id: windows
+    goos:
       - windows
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+  - id: darwin
+    goos:
       - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+  - id: linux
+    goos:
+      - linux
     goarch:
       - amd64
       - arm64
@@ -13,7 +28,7 @@ builds:
 archives:
   - format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
 scoops:
   - repository:

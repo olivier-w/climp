@@ -2,8 +2,11 @@ package player
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,9 +86,35 @@ func initOto(sampleRate, channelCount int) (*oto.Context, error) {
 		globalOtoCtx, ready, otoInitErr = oto.NewContext(op)
 		if otoInitErr == nil {
 			<-ready
+			if globalOtoCtx != nil {
+				if ctxErr := globalOtoCtx.Err(); ctxErr != nil {
+					otoInitErr = friendlyAudioInitError(ctxErr)
+				}
+			}
+		} else {
+			otoInitErr = friendlyAudioInitError(otoInitErr)
 		}
 	})
 	return globalOtoCtx, otoInitErr
+}
+
+func friendlyAudioInitError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if runtime.GOOS != "linux" {
+		return err
+	}
+
+	msg := strings.ToLower(err.Error())
+	isNoDevice := strings.Contains(msg, "alsa error at snd_pcm_open") ||
+		strings.Contains(msg, "unknown pcm default") ||
+		strings.Contains(msg, "cannot find card '0'")
+	if !isNoDevice {
+		return err
+	}
+
+	return fmt.Errorf("no Linux audio output device found (ALSA default device unavailable). This is common on headless VMs/containers; configure ALSA/PipeWire/PulseAudio or use a machine with audio")
 }
 
 // New creates a new Player for the given audio file path.

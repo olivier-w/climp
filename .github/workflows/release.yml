@@ -1,0 +1,149 @@
+name: Release Binaries
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: amd64
+            runner: macos-latest
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+          - os: windows
+            arch: amd64
+            runner: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Linux build dependencies
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev
+
+      - name: Build binary
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          outdir="dist/climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}"
+          mkdir -p "$outdir"
+          out="$outdir/climp"
+          if [ "${{ matrix.os }}" = "windows" ]; then
+            out="${out}.exe"
+          fi
+          go build -ldflags "-s -w" -o "$out" .
+
+      - name: Create tar.gz archive
+        if: matrix.os != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          tar -czf "climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}.tar.gz" "climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}"
+
+      - name: Create zip archive
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}/*" -DestinationPath "dist/climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}.zip"
+
+      - name: Upload tar artifact
+        if: matrix.os != 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+      - name: Upload zip artifact
+        if: matrix.os == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release assets
+    runs-on: ubuntu-latest
+    needs: build
+    if: ${{ always() }}
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Validate expected archives
+        run: |
+          set -euo pipefail
+          expected=(
+            "dist/linux-amd64/climp_${{ github.ref_name }}_linux_amd64.tar.gz"
+            "dist/linux-arm64/climp_${{ github.ref_name }}_linux_arm64.tar.gz"
+            "dist/darwin-amd64/climp_${{ github.ref_name }}_darwin_amd64.tar.gz"
+            "dist/darwin-arm64/climp_${{ github.ref_name }}_darwin_arm64.tar.gz"
+            "dist/windows-amd64/climp_${{ github.ref_name }}_windows_amd64.zip"
+          )
+
+          missing=()
+          for f in "${expected[@]}"; do
+            if [ ! -f "$f" ]; then
+              missing+=("$f")
+            fi
+          done
+
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "Missing expected release archives:"
+            printf ' - %s\n' "${missing[@]}"
+            echo "Available files:"
+            find dist -type f | sed 's/^/ - /'
+            exit 1
+          fi
+
+      - name: Upload archives to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=(
+            "dist/linux-amd64/climp_${{ github.ref_name }}_linux_amd64.tar.gz"
+            "dist/linux-arm64/climp_${{ github.ref_name }}_linux_arm64.tar.gz"
+            "dist/darwin-amd64/climp_${{ github.ref_name }}_darwin_amd64.tar.gz"
+            "dist/darwin-arm64/climp_${{ github.ref_name }}_darwin_arm64.tar.gz"
+            "dist/windows-amd64/climp_${{ github.ref_name }}_windows_amd64.zip"
+          )
+
+          if gh release view "${{ github.ref_name }}" --repo "${{ github.repository }}" --json id --jq .id; then
+            gh release upload "${{ github.ref_name }}" "${files[@]}" --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "${{ github.ref_name }}" "${files[@]}" --repo "${{ github.repository }}" --generate-notes
+          fi

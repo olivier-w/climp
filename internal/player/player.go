@@ -66,6 +66,7 @@ type Player struct {
 	bytesPerSec int // immutable after init — safe to read without mutex
 	speed       SpeedMode
 	sampleBuf   *visualizer.RingBuffer
+	canSeek     bool
 }
 
 var (
@@ -129,15 +130,36 @@ func New(path string) (*Player, error) {
 		return nil, err
 	}
 
+	return newFromDecoder(f, dec, true)
+}
+
+// NewStream creates a new Player for a live URL stream decoded by ffmpeg.
+func NewStream(url string) (*Player, error) {
+	dec, err := newStreamDecoder(url)
+	if err != nil {
+		return nil, err
+	}
+	return newFromDecoder(nil, dec, false)
+}
+
+func newFromDecoder(file *os.File, dec audioDecoder, canSeek bool) (*Player, error) {
 	ctx, err := initOto(dec.SampleRate(), dec.ChannelCount())
 	if err != nil {
-		f.Close()
+		if file != nil {
+			file.Close()
+		}
+		if c, ok := dec.(io.Closer); ok {
+			c.Close()
+		}
 		return nil, err
 	}
 
 	bytesPerSec := dec.SampleRate() * dec.ChannelCount() * 2 // 16-bit = 2 bytes
 	totalBytes := dec.Length()
-	dur := time.Duration(float64(totalBytes) / float64(bytesPerSec) * float64(time.Second))
+	dur := time.Duration(0)
+	if totalBytes > 0 {
+		dur = time.Duration(float64(totalBytes) / float64(bytesPerSec) * float64(time.Second))
+	}
 
 	// ~90ms at 44100Hz stereo 16-bit = 44100 * 2 * 2 * 0.09 ≈ 16KB
 	sampleBuf := visualizer.NewRingBuffer(16384)
@@ -146,7 +168,7 @@ func New(path string) (*Player, error) {
 	sr := newSpeedReader(cr, frameSize)
 
 	p := &Player{
-		file:        f,
+		file:        file,
 		decoder:     dec,
 		counter:     cr,
 		sr:          sr,
@@ -157,6 +179,7 @@ func New(path string) (*Player, error) {
 		stopMon:     make(chan struct{}),
 		bytesPerSec: bytesPerSec,
 		sampleBuf:   sampleBuf,
+		canSeek:     canSeek,
 	}
 
 	p.otoPlayer = ctx.NewPlayer(sr)
@@ -186,11 +209,25 @@ func (p *Player) monitor() {
 			return
 		}
 		pos := p.counter.Pos()
-		total := p.decoder.Length()
 		paused := p.paused
+		canSeek := p.canSeek
 		p.mu.Unlock()
 
-		if !paused && pos >= total {
+		if paused {
+			continue
+		}
+
+		if canSeek {
+			total := p.decoder.Length()
+			if total >= 0 && pos >= total {
+				close(p.done)
+				return
+			}
+			continue
+		}
+
+		// Non-seekable/live sources finish when Oto drains and pauses naturally.
+		if !p.otoPlayer.IsPlaying() && p.otoPlayer.BufferedSize() == 0 {
 			close(p.done)
 			return
 		}
@@ -209,6 +246,9 @@ func (p *Player) Done() <-chan struct{} {
 func (p *Player) Restart() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.canSeek {
+		return
+	}
 
 	// Stop the old monitor goroutine before replacing the done channel.
 	close(p.stopMon)
@@ -269,6 +309,9 @@ func (p *Player) Duration() time.Duration {
 func (p *Player) Seek(delta time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.canSeek {
+		return
+	}
 
 	currentPos := p.counter.Pos()
 	deltaBytes := int64(delta.Seconds() * float64(p.bytesPerSec))
@@ -374,6 +417,13 @@ func (p *Player) CycleSpeed() SpeedMode {
 	return p.speed
 }
 
+// CanSeek reports whether this player supports seeking/restart semantics.
+func (p *Player) CanSeek() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.canSeek
+}
+
 // Samples returns the most recent n int16 samples from the audio stream.
 // Returns interleaved stereo samples (left, right, left, right, ...).
 func (p *Player) Samples(n int) []int16 {
@@ -406,5 +456,10 @@ func (p *Player) Close() {
 	p.closed = true
 	close(p.stopMon)
 	p.otoPlayer.Pause()
-	p.file.Close()
+	if p.file != nil {
+		p.file.Close()
+	}
+	if c, ok := p.decoder.(io.Closer); ok {
+		c.Close()
+	}
 }

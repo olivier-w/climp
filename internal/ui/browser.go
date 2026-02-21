@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/olivier-w/climp/internal/media"
 )
 
 // BrowserResult holds the outcome of the file browser.
@@ -18,14 +19,14 @@ type BrowserResult struct {
 	Cancelled bool
 }
 
-type audioItem struct {
+type fileItem struct {
 	name string
 	ext  string
 }
 
-func (i audioItem) Title() string       { return i.name }
-func (i audioItem) Description() string { return i.ext }
-func (i audioItem) FilterValue() string { return i.name }
+func (i fileItem) Title() string       { return i.name }
+func (i fileItem) Description() string { return i.ext }
+func (i fileItem) FilterValue() string { return i.name }
 
 type urlItem struct{}
 
@@ -35,11 +36,11 @@ func (i urlItem) FilterValue() string { return "url" }
 
 // BrowserModel is the Bubbletea model for the file browser screen.
 type BrowserModel struct {
-	list     list.Model
-	input    textinput.Model
-	urlMode  bool
-	result   *BrowserResult
-	err      error
+	list    list.Model
+	input   textinput.Model
+	urlMode bool
+	result  *BrowserResult
+	err     error
 }
 
 // NewBrowser creates a new file browser model scanning the current directory.
@@ -56,9 +57,12 @@ func NewBrowser() BrowserModel {
 		}
 		ext := strings.ToLower(filepath.Ext(e.Name()))
 		switch ext {
-		case ".mp3", ".wav", ".flac", ".ogg":
+		default:
+			if !media.IsSupportedExt(ext) && !media.IsPlaylistExt(ext) {
+				continue
+			}
 			name := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
-			items = append(items, audioItem{name: name, ext: ext})
+			items = append(items, fileItem{name: name, ext: ext})
 		}
 	}
 
@@ -125,8 +129,8 @@ func (m BrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.urlMode = true
 				m.input.Focus()
 				return m, tea.Batch(textinput.Blink, tea.SetWindowTitle("climp — enter URL"))
-			case audioItem:
-				item := m.list.SelectedItem().(audioItem)
+			case fileItem:
+				item := m.list.SelectedItem().(fileItem)
 				path := item.name + item.ext
 				m.result = &BrowserResult{Path: path}
 				return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)

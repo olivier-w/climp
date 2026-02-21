@@ -105,7 +105,8 @@ func newKeyMap() keyMap {
 }
 
 // updateEnabled enables or disables conditional bindings.
-func (k *keyMap) updateEnabled(canSave bool, hasQueue bool) {
+func (k *keyMap) updateEnabled(canSave bool, hasQueue bool, canSeek bool) {
+	k.Seek.SetEnabled(canSeek)
 	k.NextTrack.SetEnabled(hasQueue)
 	k.PrevTrack.SetEnabled(hasQueue)
 	k.Scroll.SetEnabled(hasQueue)

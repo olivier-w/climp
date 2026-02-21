@@ -7,8 +7,10 @@ This file gives coding agents fast context for working in this repository.
 `climp` is a standalone CLI media player written in Go with a Bubble Tea TUI.
 
 - Local playback: MP3, WAV, FLAC, OGG
-- URL playback via `yt-dlp`
-- Queue support for local directories and YouTube playlists/radio
+- URL playback:
+  - finite downloads via `yt-dlp`
+  - live streams via `ffmpeg` for suffix-routed URLs (`.m3u8`, `.m3u`, `.aac`)
+- Queue support for local directories, YouTube playlists/radio, and local playlist files with mixed local/live URL entries
 - Real-time visualizers, progress, repeat, shuffle, speed control
 
 Entry point: `main.go`
@@ -33,11 +35,12 @@ If Go is missing from PATH on Windows, use:
 
 - `internal/player/`: audio engine and decoder pipeline
   - decoders normalize to 16-bit LE PCM
+  - live stream path: ffmpeg subprocess -> PCM pipe (`player.NewStream`)
   - pipeline: decoder -> countingReader -> speedReader -> Oto
   - `countingReader` also feeds visualizer ring buffer
 - `internal/ui/`: Bubble Tea model, key handling, queue UI, download UI
 - `internal/queue/`: playlist ordering, shuffle mapping, navigation
-- `internal/downloader/`: `yt-dlp` integration and playlist extraction
+- `internal/downloader/`: `yt-dlp` integration, playlist extraction, URL classification
 - `internal/visualizer/`: all visualization modes + FFT analysis
 
 ## Visualizer Context
@@ -73,11 +76,16 @@ Notes:
 - Skip failed tracks when advancing.
 - Speed setting persists across track changes.
 - Seeking/restart recreates Oto player (no in-place seek).
+- Live stream tracks are non-seekable (`Player.CanSeek() == false`).
+- Repeat-one applies only to seekable tracks.
+- Save (`s`) is enabled only for downloaded URL tracks (not live streams).
 
 ## External Tools
 
 - `yt-dlp`: URL playback and playlist extraction
-- `ffmpeg`: save current URL stream to MP3 (`s` key)
+- `ffmpeg`:
+  - live URL playback decode path (`ffmpeg -> s16le PCM pipe`)
+  - save downloaded URL tracks to MP3 (`s` key)
 
 ## Platform Notes
 
@@ -120,3 +128,26 @@ Notes:
    - repeat/shuffle rules remain consistent
    - queue updates happen in Bubble Tea update loop
 4. Run build/vet/test commands and sanity-check queue navigation keys.
+
+## Live / HLS Status (Feb 2026)
+
+Implemented behavior:
+
+- Live URL routing is intentionally simple and suffix-based via `downloader.IsLiveBySuffix`:
+  - `.m3u8`, `.m3u`, `.aac` -> try `player.NewStream(url)` first.
+- If live setup fails for suffix-routed URLs, fallback is the existing finite `yt-dlp` download path.
+- Non-suffix URLs stay on the existing `yt-dlp` path (no reverse fallback to live).
+- Live playback path:
+  - `ffmpeg` subprocess decodes input to PCM:
+    - `-ac 2 -ar 44100 -f s16le pipe:1`
+  - Player is non-seekable (`CanSeek=false`, unknown duration).
+  - UI shows elapsed time + `LIVE`; seek keys no-op.
+- Queue integration:
+  - live URL entries can be `Ready` without a local temp file path.
+  - previous/next and wrap logic treat live entries as playable and avoid resetting them to `Pending`.
+
+Current limitations / scope:
+
+- URL live detection is suffix-only by design (predictable, low complexity).
+- No app-level retry loop for live startup beyond ffmpeg reconnect flags.
+- Save (`s`) remains download-only; no live recording mode.

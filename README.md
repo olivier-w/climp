@@ -7,6 +7,8 @@ minimal cli media player.
 # format support
 .mp3, .wav, .flac, .ogg
 
+### playlists
+.m3u, .m3u8, .pls
 ## file browser
 
 Run `climp` with no arguments to browse and select files interactively.
@@ -15,13 +17,24 @@ Run `climp` with no arguments to browse and select files interactively.
 
 ## url support
 
-Play audio from URLs using [yt-dlp](https://github.com/yt-dlp/yt-dlp):
+Play audio from URLs using [yt-dlp](https://github.com/yt-dlp/yt-dlp) (finite downloads) and `ffmpeg` (live streams):
 
 ```bash
 climp https://youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
 Requires `yt-dlp` to be installed. climp will show install instructions if it's missing. Downloads as WAV for faster processing — press `s` during playback to save as MP3 (requires `ffmpeg`).
+Live stream URLs ending in `.m3u8`, `.m3u`, or `.aac` are routed to a live playback path via `ffmpeg` (`ffmpeg -i <url> -> PCM`). If live setup fails, climp falls back to the existing `yt-dlp` download path for that URL. Non-suffix URLs continue to use the `yt-dlp` path directly.
+Live playback requires `ffmpeg` to be installed.
+If yt-dlp shows no activity for 15 seconds, climp fails fast instead of hanging.
+
+Live URL examples:
+
+```bash
+climp https://example.com/station.m3u8
+climp https://example.com/station.m3u
+climp https://example.com/stream.aac
+```
 
 ![url playback demo](demo/url-fixed.gif)
 
@@ -35,6 +48,18 @@ When playing a local file, climp automatically scans the directory for other sup
 climp song.mp3   # plays all audio files in the same directory
 ```
 
+### local playlist files
+
+climp can open local playlist files directly:
+
+```bash
+climp my-playlist.m3u
+climp my-playlist.m3u8
+climp my-playlist.pls
+```
+
+For local playlist files, climp plays valid local media entries and `http(s)` URL entries. URL entries ending in `.m3u8`, `.m3u`, or `.aac` use the live ffmpeg path; other URL entries use the yt-dlp download path. Invalid or unsupported entries are skipped. If no playable entries remain, playback fails with an error.
+
 ### youtube playlists
 
 YouTube playlists and radio URLs are automatically detected. The first track starts playing immediately while the rest of the playlist is extracted in the background (up to 50 tracks). Upcoming tracks are downloaded one at a time ahead of playback.
@@ -45,6 +70,8 @@ climp https://youtube.com/watch?v=xxx&list=RDxxx   # radio/mix
 ```
 
 Use `n`/`p` to skip between tracks, `j`/`k` to scroll the queue, `enter` to jump to a selected track, and `del` to remove a track. Repeat mode (`r`) cycles through off, repeat song, and repeat playlist. Shuffle mode (`z`) randomizes playback order without reordering the queue — the current track stays put and the rest are shuffled. Works with repeat playlist to re-shuffle at the end of each cycle. Speed control (`x`) cycles through 1x, 2x, and 0.5x playback speed — pitch shifts proportionally.
+
+When playlist mode is active, the header shows a playlist label (`Playlist: ...`) so you can quickly tell what queue you are in.
 
 ![playlist demo](demo/playlist.gif)
 
@@ -105,8 +132,10 @@ Install/enable an audio stack (ALSA/PipeWire/PulseAudio) or run on a machine/ses
 ```bash
 climp song.mp3
 climp track.flac
+climp my-playlist.m3u
 climp https://youtube.com/watch?v=...
 climp https://youtube.com/playlist?list=...
+climp https://example.com/station.m3u8
 ```
 
 ## keybindings
@@ -114,8 +143,8 @@ climp https://youtube.com/playlist?list=...
 | key | Action |
 |-----|--------|
 | space | toggle pause |
-| left / h | seek -5s |
-| right / l | seek +5s |
+| left / h | seek -5s (disabled for live streams) |
+| right / l | seek +5s (disabled for live streams) |
 | + | volume +5% |
 | - | volume -5% |
 | v | cycle visualizer (vu / spectrum / waterfall / waveform / lissajous / braille / dense / matrix / hatching / off) |
@@ -127,7 +156,7 @@ climp https://youtube.com/playlist?list=...
 | up / down | scroll queue list (playlist) |
 | enter | play selected track (playlist) |
 | del / backspace | remove selected track (playlist) |
-| s | save as mp3 (url playback only) |
+| s | save as mp3 (downloaded URL playback only; disabled for live streams) |
 | q / esc / ctrl+c | quit |
 
 ## license

@@ -56,7 +56,7 @@ Press `v` to cycle through audio-reactive visualizers: VU meter, spectrum, water
 
 ## install
 
-Download prebuilt binaries for linux, macos, and windows from [GitHub Releases](https://github.com/olivier-w/climp/releases).
+Download prebuilt binaries from [GitHub Releases](https://github.com/olivier-w/climp/releases): linux (amd64/arm64), macos (amd64/arm64), windows (amd64).
 
 ### windows
 

@@ -86,6 +86,19 @@ if you want `climp` to play youtube tracks, while installing `yt-dlp` with `pip`
 /Applications/Python\ 3.xx.xx/Install\ Certificates.command
 ```
 
+### linux troubleshooting (headless/VM)
+
+If playback fails with ALSA errors like `Unknown PCM default` or `cannot find card '0'`, the machine has no usable default audio output device. This is common on headless VMs/containers.
+
+Check detected devices:
+
+```bash
+aplay -l
+aplay -L
+```
+
+Install/enable an audio stack (ALSA/PipeWire/PulseAudio) or run on a machine/session with audio output available.
+
 
 ## usage
 

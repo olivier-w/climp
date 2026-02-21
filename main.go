@@ -17,7 +17,11 @@ import (
 
 func main() {
 	var arg string
-	var playlistFiles []string
+	var playlistEntries []media.PlaylistEntry
+	playlistStartIdx := -1
+	var playlistStartCleanup func()
+	var playlistSourcePath string
+	metaSet := false
 
 	if len(os.Args) < 2 {
 		browser := ui.NewBrowser()
@@ -45,22 +49,11 @@ func main() {
 	var path string
 	var meta player.Metadata
 	if downloader.IsURL(arg) {
-		// Download the first video immediately (--no-playlist ensures only one).
-		// Playlist extraction happens in the background once playback starts.
-		dlModel := ui.NewDownload(arg)
-		dlProgram := tea.NewProgram(dlModel, tea.WithAltScreen())
-		finalModel, err := dlProgram.Run()
+		result, err := downloadURL(arg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-
-		dm, ok := finalModel.(ui.DownloadModel)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "Error: unexpected model type from downloader\n")
-			os.Exit(1)
-		}
-		result := dm.Result()
 		if result.Err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
 			os.Exit(1)
@@ -75,6 +68,7 @@ func main() {
 		} else {
 			meta = player.ReadMetadata(path)
 		}
+		metaSet = true
 	} else {
 		path = arg
 
@@ -97,12 +91,51 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			playlistFiles = media.FilterPlayableLocalPaths(entries)
-			if len(playlistFiles) == 0 {
-				fmt.Fprintf(os.Stderr, "Error: playlist contains no valid local media entries\n")
+			playlistEntries, _ = media.FilterPlayablePlaylistEntries(entries)
+			if len(playlistEntries) == 0 {
+				fmt.Fprintf(os.Stderr, "Error: playlist contains no playable entries\n")
 				os.Exit(1)
 			}
-			path = playlistFiles[0]
+			for i := range playlistEntries {
+				e := &playlistEntries[i]
+				if e.Path != "" && e.URL == "" {
+					path = e.Path
+					playlistStartIdx = i
+					break
+				}
+				if e.URL == "" {
+					continue
+				}
+
+				result, err := downloadURL(e.URL)
+				if err != nil {
+					continue
+				}
+				if result.Err != nil {
+					if result.Cleanup != nil {
+						result.Cleanup()
+					}
+					continue
+				}
+				e.Path = result.Path
+				if result.Title != "" {
+					e.Title = result.Title
+				}
+				playlistStartCleanup = result.Cleanup
+				path = e.Path
+				playlistSourcePath = e.Path
+				meta = player.Metadata{Title: e.Title}
+				if meta.Title == "" {
+					meta = player.ReadMetadata(path)
+				}
+				metaSet = true
+				playlistStartIdx = i
+				break
+			}
+			if playlistStartIdx < 0 {
+				fmt.Fprintf(os.Stderr, "Error: playlist contains no playable entries\n")
+				os.Exit(1)
+			}
 		} else if !media.IsSupportedExt(ext) {
 			fmt.Fprintf(os.Stderr, "Error: unsupported format %s (supported: %s)\n", ext, media.SupportedExtsList())
 			os.Exit(1)
@@ -110,7 +143,7 @@ func main() {
 	}
 
 	// Read metadata for local files
-	if !downloader.IsURL(arg) {
+	if !metaSet {
 		meta = player.ReadMetadata(path)
 	}
 
@@ -126,20 +159,36 @@ func main() {
 	var model ui.Model
 	if downloader.IsURL(arg) {
 		model = ui.New(p, meta, path, arg)
-	} else if len(playlistFiles) > 0 {
-		// Build queue from local playlist entries in file order.
-		tracks := make([]queue.Track, len(playlistFiles))
-		for i, f := range playlistFiles {
+	} else if len(playlistEntries) > 0 {
+		// Build queue from playlist entries in file order.
+		tracks := make([]queue.Track, len(playlistEntries))
+		for i, e := range playlistEntries {
+			title := e.Title
+			if title == "" && e.Path != "" {
+				title = strings.TrimSuffix(filepath.Base(e.Path), filepath.Ext(e.Path))
+			}
+			if title == "" && e.URL != "" {
+				title = e.URL
+			}
+
 			tracks[i] = queue.Track{
-				Title: strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)),
-				Path:  f,
-				State: queue.Ready,
+				Title: title,
+				URL:   e.URL,
+				Path:  e.Path,
+			}
+			if e.URL != "" && e.Path == "" {
+				tracks[i].State = queue.Pending
+			} else {
+				tracks[i].State = queue.Ready
 			}
 		}
-		tracks[0].State = queue.Playing
+		tracks[playlistStartIdx].State = queue.Playing
+		if playlistStartCleanup != nil {
+			tracks[playlistStartIdx].Cleanup = playlistStartCleanup
+		}
 		q := queue.New(tracks)
-		q.SetCurrentIndex(0)
-		model = ui.NewWithQueue(p, meta, "", q)
+		q.SetCurrentIndex(playlistStartIdx)
+		model = ui.NewWithQueue(p, meta, playlistSourcePath, q)
 	} else if siblings := scanAudioFiles(path); siblings != nil {
 		// Build queue from sibling audio files in the same directory
 		tracks := make([]queue.Track, len(siblings))
@@ -203,4 +252,19 @@ func scanAudioFiles(path string) []string {
 	})
 
 	return files
+}
+
+func downloadURL(url string) (ui.DownloadResult, error) {
+	dlModel := ui.NewDownload(url)
+	dlProgram := tea.NewProgram(dlModel, tea.WithAltScreen())
+	finalModel, err := dlProgram.Run()
+	if err != nil {
+		return ui.DownloadResult{}, err
+	}
+
+	dm, ok := finalModel.(ui.DownloadModel)
+	if !ok {
+		return ui.DownloadResult{}, fmt.Errorf("unexpected model type from downloader")
+	}
+	return dm.Result(), nil
 }

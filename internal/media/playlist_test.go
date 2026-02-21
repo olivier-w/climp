@@ -10,7 +10,7 @@ import (
 func TestParseLocalPlaylistM3U(t *testing.T) {
 	dir := t.TempDir()
 	playlist := filepath.Join(dir, "list.m3u")
-	content := "#EXTM3U\n\nsong1.mp3\n#comment\nsub/song2.wav\n"
+	content := "\uFEFF#EXTM3U\n\nsong1.mp3\n#comment\n\"https://example.com/stream\"\nsub/song2.wav\n"
 	if err := os.WriteFile(playlist, []byte(content), 0o644); err != nil {
 		t.Fatalf("write playlist: %v", err)
 	}
@@ -20,9 +20,10 @@ func TestParseLocalPlaylistM3U(t *testing.T) {
 		t.Fatalf("ParseLocalPlaylist() error = %v", err)
 	}
 
-	want := []string{
-		filepath.Join(dir, "song1.mp3"),
-		filepath.Join(dir, "sub", "song2.wav"),
+	want := []PlaylistEntry{
+		{Path: filepath.Join(dir, "song1.mp3")},
+		{URL: "https://example.com/stream", Title: "https://example.com/stream"},
+		{Path: filepath.Join(dir, "sub", "song2.wav")},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ParseLocalPlaylist() = %#v, want %#v", got, want)
@@ -32,7 +33,7 @@ func TestParseLocalPlaylistM3U(t *testing.T) {
 func TestParseLocalPlaylistPLS(t *testing.T) {
 	dir := t.TempDir()
 	playlist := filepath.Join(dir, "list.pls")
-	content := "[playlist]\nFile1=one.flac\nTitle1=One\nLength1=120\nFile2=two.ogg\nFileX=bad.mp3\nFile3=\n"
+	content := "[playlist]\n file1 = one.flac \nTitle1=One\nLength1=120\nFile2=https://example.com/live\nFileX=bad.mp3\nFile3=\n"
 	if err := os.WriteFile(playlist, []byte(content), 0o644); err != nil {
 		t.Fatalf("write playlist: %v", err)
 	}
@@ -42,16 +43,16 @@ func TestParseLocalPlaylistPLS(t *testing.T) {
 		t.Fatalf("ParseLocalPlaylist() error = %v", err)
 	}
 
-	want := []string{
-		filepath.Join(dir, "one.flac"),
-		filepath.Join(dir, "two.ogg"),
+	want := []PlaylistEntry{
+		{Path: filepath.Join(dir, "one.flac")},
+		{URL: "https://example.com/live", Title: "https://example.com/live"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ParseLocalPlaylist() = %#v, want %#v", got, want)
 	}
 }
 
-func TestFilterPlayableLocalPaths(t *testing.T) {
+func TestFilterPlayablePlaylistEntries(t *testing.T) {
 	dir := t.TempDir()
 	valid := filepath.Join(dir, "ok.mp3")
 	if err := os.WriteFile(valid, []byte("x"), 0o644); err != nil {
@@ -66,17 +67,23 @@ func TestFilterPlayableLocalPaths(t *testing.T) {
 		t.Fatalf("create dir: %v", err)
 	}
 
-	input := []string{
-		valid,
-		filepath.Join(dir, "missing.mp3"),
-		unsupported,
-		subdir,
-		"https://example.com/track.mp3",
+	input := []PlaylistEntry{
+		{Path: valid},
+		{Path: filepath.Join(dir, "missing.mp3")},
+		{Path: unsupported},
+		{Path: subdir},
+		{URL: "https://example.com/track.mp3"},
 	}
 
-	got := FilterPlayableLocalPaths(input)
-	want := []string{valid}
+	got, skipped := FilterPlayablePlaylistEntries(input)
+	want := []PlaylistEntry{
+		{Path: valid, Title: "ok"},
+		{URL: "https://example.com/track.mp3", Title: "https://example.com/track.mp3"},
+	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("FilterPlayableLocalPaths() = %#v, want %#v", got, want)
+		t.Fatalf("FilterPlayablePlaylistEntries() = %#v, want %#v", got, want)
+	}
+	if skipped != 3 {
+		t.Fatalf("FilterPlayablePlaylistEntries() skipped=%d, want %d", skipped, 3)
 	}
 }

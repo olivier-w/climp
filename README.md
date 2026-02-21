@@ -47,7 +47,7 @@ climp my-playlist.m3u8
 climp my-playlist.pls
 ```
 
-For local playlist files, climp keeps only valid local media file entries. Missing files, unsupported files, and URL lines are ignored. If no valid local media entries remain, playback fails with an error.
+For local playlist files, climp plays valid local media entries and `http(s)` URL entries. Invalid or unsupported entries are skipped. If no playable entries remain, playback fails with an error.
 
 ### youtube playlists
 

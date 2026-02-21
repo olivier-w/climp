@@ -4,6 +4,7 @@ builds:
   - goos:
       - windows
       - darwin
+      - linux
     goarch:
       - amd64
       - arm64
@@ -13,7 +14,7 @@ builds:
 archives:
   - format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
 scoops:
   - repository:

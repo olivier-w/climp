@@ -97,7 +97,7 @@ func Download(url string, onStatus func(DownloadStatus)) (string, string, func()
 		break
 	}
 
-	if errors.Is(lastErr, ErrNoActivityTimeout) && IsLiveBySuffix(normalizedURL) {
+	if errors.Is(lastErr, ErrNoActivityTimeout) && IsLiveURL(normalizedURL) {
 		return "", "", nil, ErrLiveStreamNotSupported
 	}
 	return "", "", nil, lastErr

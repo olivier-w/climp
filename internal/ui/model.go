@@ -736,7 +736,7 @@ func (m *Model) findNextPlayable(wrap bool) (*queue.Track, int, bool) {
 			// Reset cleaned-up URL tracks to Pending so they can be re-downloaded
 			for i := 0; i < m.queue.Len(); i++ {
 				t := m.queue.Track(i)
-				if t != nil && t.State == queue.Done && t.URL != "" && t.Cleanup == nil && !downloader.IsLiveBySuffix(t.URL) {
+				if t != nil && t.State == queue.Done && t.URL != "" && t.Cleanup == nil && !downloader.IsLiveURL(t.URL) {
 					m.queue.SetTrackState(i, queue.Pending)
 					m.queue.SetTrackPath(i, "")
 				}
@@ -804,7 +804,7 @@ func (m Model) skipToNext() (Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if next.State == queue.Ready || (next.State == queue.Done && (next.Path != "" || downloader.IsLiveBySuffix(next.URL))) {
+	if next.State == queue.Ready || (next.State == queue.Done && (next.Path != "" || downloader.IsLiveURL(next.URL))) {
 		return m.advanceAndPlay()
 	}
 	if next.State == queue.Downloading || next.State == queue.Pending {
@@ -830,7 +830,7 @@ func (m Model) jumpToSelected() (Model, tea.Cmd) {
 	}
 
 	// Track is ready to play immediately.
-	if target.State == queue.Ready || (target.State == queue.Done && (target.Path != "" || downloader.IsLiveBySuffix(target.URL))) {
+	if target.State == queue.Ready || (target.State == queue.Done && (target.Path != "" || downloader.IsLiveURL(target.URL))) {
 		m.cleanupOldTracks()
 		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
 		m.queue.SetCurrentIndex(targetIdx)
@@ -903,7 +903,7 @@ func (m Model) skipToPrevious() (Model, tea.Cmd) {
 			return m, nil
 		}
 		prev := m.queue.Current()
-		if prev == nil || (prev.Path == "" && !downloader.IsLiveBySuffix(prev.URL)) {
+		if prev == nil || (prev.Path == "" && !downloader.IsLiveURL(prev.URL)) {
 			return m, nil
 		}
 		// Mark old track as done (the one we just left — it's now at shufflePos+1)
@@ -916,7 +916,7 @@ func (m Model) skipToPrevious() (Model, tea.Cmd) {
 		return m, nil
 	}
 	prev := m.queue.Track(idx - 1)
-	if prev == nil || (prev.Path == "" && !downloader.IsLiveBySuffix(prev.URL)) {
+	if prev == nil || (prev.Path == "" && !downloader.IsLiveURL(prev.URL)) {
 		return m, nil
 	}
 	m.queue.SetTrackState(idx, queue.Done)
@@ -929,7 +929,7 @@ func (m Model) skipToPrevious() (Model, tea.Cmd) {
 func (m Model) handleQueuePlaybackEnd() (Model, tea.Cmd) {
 	next, nextIdx, found := m.findNextPlayable(m.repeatMode == RepeatAll)
 	if found {
-		if next.State == queue.Ready || (next.State == queue.Done && (next.Path != "" || downloader.IsLiveBySuffix(next.URL))) {
+		if next.State == queue.Ready || (next.State == queue.Done && (next.Path != "" || downloader.IsLiveURL(next.URL))) {
 			return m.advanceAndPlay()
 		}
 		if next.State == queue.Downloading || next.State == queue.Pending {
@@ -963,7 +963,7 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		if m.transitioning {
 			m.transitioning = false
 			next, _, found := m.findNextPlayable(m.repeatMode == RepeatAll)
-			if found && (next.State == queue.Ready || (next.State == queue.Done && (next.Path != "" || downloader.IsLiveBySuffix(next.URL)))) {
+			if found && (next.State == queue.Ready || (next.State == queue.Done && (next.Path != "" || downloader.IsLiveURL(next.URL)))) {
 				m.invalidate(dirtyQueue)
 				return m.advanceAndPlay()
 			}
@@ -1037,7 +1037,7 @@ func (m Model) handlePlaylistExtracted(msg playlistExtractedMsg) (Model, tea.Cmd
 	tracks := make([]queue.Track, len(msg.entries))
 	for i, e := range msg.entries {
 		state := queue.Pending
-		if downloader.IsLiveBySuffix(e.URL) {
+		if downloader.IsLiveURL(e.URL) {
 			state = queue.Ready
 		}
 		tracks[i] = queue.Track{
@@ -1073,7 +1073,7 @@ func (m Model) advanceToTrack(track *queue.Track) (Model, tea.Cmd) {
 	if m.player != nil {
 		m.player.Close()
 	}
-	isLiveURL := track.URL != "" && downloader.IsLiveBySuffix(track.URL)
+	isLiveURL := track.URL != "" && downloader.IsLiveURL(track.URL)
 
 	// Local files (no URL) have full metadata on disk; URL downloads only have a title.
 	if track.URL == "" && track.Path != "" {

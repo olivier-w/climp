@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +15,8 @@ import (
 	"github.com/olivier-w/climp/internal/queue"
 	"github.com/olivier-w/climp/internal/ui"
 )
+
+const maxRemotePlaylistDepth = 2
 
 func main() {
 	var arg string
@@ -53,39 +56,57 @@ func main() {
 	var meta player.Metadata
 	var p *player.Player
 	if downloader.IsURL(arg) {
-		openedLive := false
-		if downloader.IsLiveBySuffix(arg) {
-			var err error
-			p, err = player.NewStream(arg)
-			if err == nil {
-				openedLive = true
-				meta = player.Metadata{Title: arg}
-				metaSet = true
+		route, err := downloader.ResolveURLRoute(arg)
+		if err != nil {
+			route = downloader.URLRouteResult{
+				Kind:     downloader.RouteFiniteDownload,
+				FinalURL: arg,
 			}
 		}
-		if !openedLive {
-			result, err := downloadURL(arg)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		if route.FinalURL == "" {
+			route.FinalURL = arg
+		}
+		if route.Kind == downloader.RouteRemotePlaylist {
+			playlistName = playlistNameFromURL(arg)
+			playlistEntries = expandRemotePlaylistEntries(route.Playlist, maxRemotePlaylistDepth)
+			if len(playlistEntries) == 0 {
+				fmt.Fprintf(os.Stderr, "Error: playlist contains no playable entries\n")
 				os.Exit(1)
 			}
-			if result.Err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
-				os.Exit(1)
+		} else {
+			openedLive := false
+			if route.Kind == downloader.RouteLiveStream {
+				p, err = player.NewStream(route.FinalURL)
+				if err == nil {
+					openedLive = true
+					meta = player.Metadata{Title: route.FinalURL}
+					metaSet = true
+				}
 			}
-			if result.Cleanup != nil {
-				defer result.Cleanup()
-			}
-			path = result.Path
-			sourcePath = result.Path
-			originalURL = arg
+			if !openedLive {
+				result, err := downloadURL(route.FinalURL)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(1)
+				}
+				if result.Err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
+					os.Exit(1)
+				}
+				if result.Cleanup != nil {
+					defer result.Cleanup()
+				}
+				path = result.Path
+				sourcePath = result.Path
+				originalURL = arg
 
-			if result.Title != "" {
-				meta = player.Metadata{Title: result.Title}
-			} else {
-				meta = player.ReadMetadata(path)
+				if result.Title != "" {
+					meta = player.Metadata{Title: result.Title}
+				} else {
+					meta = player.ReadMetadata(path)
+				}
+				metaSet = true
 			}
-			metaSet = true
 		}
 	} else {
 		path = arg
@@ -111,71 +132,37 @@ func main() {
 				os.Exit(1)
 			}
 			playlistEntries, _ = media.FilterPlayablePlaylistEntries(entries)
+			playlistEntries = expandRemotePlaylistEntries(playlistEntries, maxRemotePlaylistDepth)
 			if len(playlistEntries) == 0 {
-				fmt.Fprintf(os.Stderr, "Error: playlist contains no playable entries\n")
-				os.Exit(1)
-			}
-			for i := range playlistEntries {
-				e := &playlistEntries[i]
-				if e.Path != "" && e.URL == "" {
-					path = e.Path
-					playlistStartIdx = i
-					break
-				}
-				if e.URL == "" {
-					continue
-				}
-
-				if downloader.IsLiveBySuffix(e.URL) {
-					sp, err := player.NewStream(e.URL)
-					if err != nil {
-						continue
-					}
-					p = sp
-					playlistStartCleanup = nil
-					path = ""
-					playlistSourcePath = ""
-					meta = player.Metadata{Title: e.Title}
-					if meta.Title == "" {
-						meta.Title = e.URL
-					}
-					metaSet = true
-					playlistStartIdx = i
-					break
-				}
-
-				result, err := downloadURL(e.URL)
-				if err != nil {
-					continue
-				}
-				if result.Err != nil {
-					if result.Cleanup != nil {
-						result.Cleanup()
-					}
-					continue
-				}
-				e.Path = result.Path
-				if result.Title != "" {
-					e.Title = result.Title
-				}
-				playlistStartCleanup = result.Cleanup
-				path = e.Path
-				playlistSourcePath = e.Path
-				meta = player.Metadata{Title: e.Title}
-				if meta.Title == "" {
-					meta = player.ReadMetadata(path)
-				}
-				metaSet = true
-				playlistStartIdx = i
-				break
-			}
-			if playlistStartIdx < 0 {
 				fmt.Fprintf(os.Stderr, "Error: playlist contains no playable entries\n")
 				os.Exit(1)
 			}
 		} else if !media.IsSupportedExt(ext) {
 			fmt.Fprintf(os.Stderr, "Error: unsupported format %s (supported: %s)\n", ext, media.SupportedExtsList())
 			os.Exit(1)
+		}
+	}
+
+	if len(playlistEntries) > 0 {
+		updatedEntries, start, err := openFirstPlayablePlaylistEntry(playlistEntries)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		playlistEntries = updatedEntries
+		playlistStartIdx = start.startIdx
+		playlistStartCleanup = start.cleanup
+		playlistSourcePath = start.sourcePath
+		if start.path != "" {
+			path = start.path
+		}
+		if start.player != nil {
+			p = start.player
+			path = ""
+		}
+		if start.metaSet {
+			meta = start.meta
+			metaSet = true
 		}
 	}
 
@@ -197,9 +184,7 @@ func main() {
 
 	// Create and run TUI
 	var model ui.Model
-	if downloader.IsURL(arg) {
-		model = ui.New(p, meta, sourcePath, originalURL)
-	} else if len(playlistEntries) > 0 {
+	if len(playlistEntries) > 0 {
 		// Build queue from playlist entries in file order.
 		tracks := make([]queue.Track, len(playlistEntries))
 		for i, e := range playlistEntries {
@@ -216,7 +201,7 @@ func main() {
 				URL:   e.URL,
 				Path:  e.Path,
 			}
-			if e.URL != "" && e.Path == "" && !downloader.IsLiveBySuffix(e.URL) {
+			if e.URL != "" && e.Path == "" && !downloader.IsLiveURL(e.URL) {
 				tracks[i].State = queue.Pending
 			} else {
 				tracks[i].State = queue.Ready
@@ -229,6 +214,8 @@ func main() {
 		q := queue.New(tracks)
 		q.SetCurrentIndex(playlistStartIdx)
 		model = ui.NewWithQueue(p, meta, playlistSourcePath, q, playlistName)
+	} else if downloader.IsURL(arg) {
+		model = ui.New(p, meta, sourcePath, originalURL)
 	} else if siblings := scanAudioFiles(path); siblings != nil {
 		// Build queue from sibling audio files in the same directory
 		playlistName = playlistNameFromDirectoryOfFile(path)
@@ -315,6 +302,123 @@ func playlistNameFromDirectoryOfFile(path string) string {
 		return "Playlist"
 	}
 	return name
+}
+
+func playlistNameFromURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "Playlist"
+	}
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return "Playlist"
+	}
+	return host
+}
+
+type playlistStart struct {
+	player     *player.Player
+	path       string
+	sourcePath string
+	meta       player.Metadata
+	metaSet    bool
+	startIdx   int
+	cleanup    func()
+}
+
+func openFirstPlayablePlaylistEntry(entries []media.PlaylistEntry) ([]media.PlaylistEntry, playlistStart, error) {
+	start := playlistStart{startIdx: -1}
+	for i := range entries {
+		e := &entries[i]
+		if e.Path != "" && e.URL == "" {
+			start.path = e.Path
+			start.startIdx = i
+			return entries, start, nil
+		}
+		if e.URL == "" {
+			continue
+		}
+
+		if downloader.IsLiveURL(e.URL) {
+			sp, err := player.NewStream(e.URL)
+			if err == nil {
+				start.player = sp
+				start.meta = player.Metadata{Title: e.Title}
+				if start.meta.Title == "" {
+					start.meta.Title = e.URL
+				}
+				start.metaSet = true
+				start.startIdx = i
+				return entries, start, nil
+			}
+		}
+
+		result, err := downloadURL(e.URL)
+		if err != nil {
+			continue
+		}
+		if result.Err != nil {
+			if result.Cleanup != nil {
+				result.Cleanup()
+			}
+			continue
+		}
+		e.Path = result.Path
+		if result.Title != "" {
+			e.Title = result.Title
+		}
+		start.path = e.Path
+		start.sourcePath = e.Path
+		start.cleanup = result.Cleanup
+		start.meta = player.Metadata{Title: e.Title}
+		if start.meta.Title == "" {
+			start.meta = player.ReadMetadata(start.path)
+		}
+		start.metaSet = true
+		start.startIdx = i
+		return entries, start, nil
+	}
+
+	return entries, start, fmt.Errorf("playlist contains no playable entries")
+}
+
+func expandRemotePlaylistEntries(entries []media.PlaylistEntry, depth int) []media.PlaylistEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]media.PlaylistEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.URL == "" {
+			out = append(out, e)
+			continue
+		}
+
+		route, err := downloader.ResolveURLRoute(e.URL)
+		if err != nil {
+			out = append(out, e)
+			continue
+		}
+		if route.FinalURL != "" {
+			e.URL = route.FinalURL
+			if e.Title == "" {
+				e.Title = e.URL
+			}
+		}
+
+		if route.Kind != downloader.RouteRemotePlaylist {
+			out = append(out, e)
+			continue
+		}
+		if len(route.Playlist) == 0 {
+			continue
+		}
+		if depth <= 0 {
+			out = append(out, route.Playlist...)
+			continue
+		}
+		out = append(out, expandRemotePlaylistEntries(route.Playlist, depth-1)...)
+	}
+	return out
 }
 
 func downloadURL(url string) (ui.DownloadResult, error) {

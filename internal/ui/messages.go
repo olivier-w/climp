@@ -5,10 +5,13 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/olivier-w/climp/internal/downloader"
+	"github.com/olivier-w/climp/internal/player"
 )
 
 type tickMsg time.Time
-type playbackEndedMsg struct{}
+type playbackEndedMsg struct {
+	player *player.Player
+}
 type fileSavedMsg struct {
 	destName string
 	err      error

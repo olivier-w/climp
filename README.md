@@ -7,6 +7,8 @@ minimal cli media player.
 # format support
 .mp3, .wav, .flac, .ogg
 
+### playlists
+.m3u, .m3u8, .pls
 ## file browser
 
 Run `climp` with no arguments to browse and select files interactively.
@@ -34,6 +36,18 @@ When playing a local file, climp automatically scans the directory for other sup
 ```bash
 climp song.mp3   # plays all audio files in the same directory
 ```
+
+### local playlist files
+
+climp can open local playlist files directly:
+
+```bash
+climp my-playlist.m3u
+climp my-playlist.m3u8
+climp my-playlist.pls
+```
+
+For local playlist files, climp keeps only valid local media file entries. Missing files, unsupported files, and URL lines are ignored. If no valid local media entries remain, playback fails with an error.
 
 ### youtube playlists
 
@@ -90,6 +104,7 @@ if you want `climp` to play youtube tracks, while installing `yt-dlp` with `pip`
 ```bash
 climp song.mp3
 climp track.flac
+climp my-playlist.m3u
 climp https://youtube.com/watch?v=...
 climp https://youtube.com/playlist?list=...
 ```

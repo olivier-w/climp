@@ -441,7 +441,7 @@ func (m Model) Init() tea.Cmd {
 func checkDone(p *player.Player) tea.Cmd {
 	return func() tea.Msg {
 		<-p.Done()
-		return playbackEndedMsg{}
+		return playbackEndedMsg{player: p}
 	}
 }
 
@@ -622,6 +622,10 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		return m, nil
 
 	case playbackEndedMsg:
+		// Ignore stale done notifications from a player instance that's no longer current.
+		if msg.player != m.player {
+			return m, nil
+		}
 		if m.player == nil {
 			return m, nil
 		}
@@ -724,7 +728,15 @@ func (m *Model) findNextPlayable(wrap bool) (*queue.Track, int, bool) {
 // marks the new track Playing, and switches playback to it.
 func (m Model) advanceAndPlay() (Model, tea.Cmd) {
 	m.cleanupOldTracks()
-	m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
+	prevIdx := m.queue.CurrentIndex()
+	if prevIdx < 0 && !m.queue.IsShuffled() && m.queue.Len() > 0 {
+		// Repeat-all wrap sets current to -1 so Next() can return index 0.
+		// Treat the previous track as the last queue item.
+		prevIdx = m.queue.Len() - 1
+	}
+	if prevIdx >= 0 {
+		m.queue.SetTrackState(prevIdx, queue.Done)
+	}
 	if m.queue.IsShuffled() {
 		m.queue.AdvanceShuffle()
 	} else {

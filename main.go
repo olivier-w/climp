@@ -9,16 +9,15 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/olivier-w/climp/internal/downloader"
+	"github.com/olivier-w/climp/internal/media"
 	"github.com/olivier-w/climp/internal/player"
 	"github.com/olivier-w/climp/internal/queue"
 	"github.com/olivier-w/climp/internal/ui"
 )
 
-// supportedExts lists all audio formats the player can handle.
-var supportedExts = map[string]bool{".mp3": true, ".wav": true, ".flac": true, ".ogg": true}
-
 func main() {
 	var arg string
+	var playlistFiles []string
 
 	if len(os.Args) < 2 {
 		browser := ui.NewBrowser()
@@ -92,8 +91,20 @@ func main() {
 
 		// Check extension
 		ext := strings.ToLower(filepath.Ext(path))
-		if !supportedExts[ext] {
-			fmt.Fprintf(os.Stderr, "Error: unsupported format %s (supported: .mp3, .wav, .flac, .ogg)\n", ext)
+		if media.IsPlaylistExt(ext) {
+			entries, err := media.ParseLocalPlaylist(path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			playlistFiles = media.FilterPlayableLocalPaths(entries)
+			if len(playlistFiles) == 0 {
+				fmt.Fprintf(os.Stderr, "Error: playlist contains no valid local media entries\n")
+				os.Exit(1)
+			}
+			path = playlistFiles[0]
+		} else if !media.IsSupportedExt(ext) {
+			fmt.Fprintf(os.Stderr, "Error: unsupported format %s (supported: %s)\n", ext, media.SupportedExtsList())
 			os.Exit(1)
 		}
 	}
@@ -115,6 +126,20 @@ func main() {
 	var model ui.Model
 	if downloader.IsURL(arg) {
 		model = ui.New(p, meta, path, arg)
+	} else if len(playlistFiles) > 0 {
+		// Build queue from local playlist entries in file order.
+		tracks := make([]queue.Track, len(playlistFiles))
+		for i, f := range playlistFiles {
+			tracks[i] = queue.Track{
+				Title: strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)),
+				Path:  f,
+				State: queue.Ready,
+			}
+		}
+		tracks[0].State = queue.Playing
+		q := queue.New(tracks)
+		q.SetCurrentIndex(0)
+		model = ui.NewWithQueue(p, meta, "", q)
 	} else if siblings := scanAudioFiles(path); siblings != nil {
 		// Build queue from sibling audio files in the same directory
 		tracks := make([]queue.Track, len(siblings))
@@ -164,7 +189,7 @@ func scanAudioFiles(path string) []string {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(e.Name()))
-		if supportedExts[ext] {
+		if media.IsSupportedExt(ext) {
 			files = append(files, filepath.Join(dir, e.Name()))
 		}
 	}
@@ -179,4 +204,3 @@ func scanAudioFiles(path string) []string {
 
 	return files
 }
-

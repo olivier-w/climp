@@ -7,8 +7,10 @@ This file gives coding agents fast context for working in this repository.
 `climp` is a standalone CLI media player written in Go with a Bubble Tea TUI.
 
 - Local playback: MP3, WAV, FLAC, OGG
-- URL playback via `yt-dlp`
-- Queue support for local directories and YouTube playlists/radio
+- URL playback:
+  - finite downloads via `yt-dlp`
+  - live streams via `ffmpeg` for suffix-routed URLs (`.m3u8`, `.m3u`, `.aac`)
+- Queue support for local directories, YouTube playlists/radio, and local playlist files with mixed local/live URL entries
 - Real-time visualizers, progress, repeat, shuffle, speed control
 
 Entry point: `main.go`
@@ -33,11 +35,12 @@ If Go is missing from PATH on Windows, use:
 
 - `internal/player/`: audio engine and decoder pipeline
   - decoders normalize to 16-bit LE PCM
+  - live stream path: ffmpeg subprocess -> PCM pipe (`player.NewStream`)
   - pipeline: decoder -> countingReader -> speedReader -> Oto
   - `countingReader` also feeds visualizer ring buffer
 - `internal/ui/`: Bubble Tea model, key handling, queue UI, download UI
 - `internal/queue/`: playlist ordering, shuffle mapping, navigation
-- `internal/downloader/`: `yt-dlp` integration and playlist extraction
+- `internal/downloader/`: `yt-dlp` integration, playlist extraction, URL classification
 - `internal/visualizer/`: all visualization modes + FFT analysis
 
 ## Visualizer Context
@@ -73,11 +76,16 @@ Notes:
 - Skip failed tracks when advancing.
 - Speed setting persists across track changes.
 - Seeking/restart recreates Oto player (no in-place seek).
+- Live stream tracks are non-seekable (`Player.CanSeek() == false`).
+- Repeat-one applies only to seekable tracks.
+- Save (`s`) is enabled only for downloaded URL tracks (not live streams).
 
 ## External Tools
 
 - `yt-dlp`: URL playback and playlist extraction
-- `ffmpeg`: save current URL stream to MP3 (`s` key)
+- `ffmpeg`:
+  - live URL playback decode path (`ffmpeg -> s16le PCM pipe`)
+  - save downloaded URL tracks to MP3 (`s` key)
 
 ## Platform Notes
 
@@ -121,69 +129,25 @@ Notes:
    - queue updates happen in Bubble Tea update loop
 4. Run build/vet/test commands and sanity-check queue navigation keys.
 
-## Recent Radio URL Investigation (Feb 2026)
+## Live / HLS Status (Feb 2026)
 
-Context: many public `.m3u` / `.m3u8` radio URLs were failing or hanging on `Fetching info...` / `Starting download...`.
+Implemented behavior:
 
-What was tried:
+- Live URL routing is intentionally simple and suffix-based via `downloader.IsLiveBySuffix`:
+  - `.m3u8`, `.m3u`, `.aac` -> try `player.NewStream(url)` first.
+- If live setup fails for suffix-routed URLs, fallback is the existing finite `yt-dlp` download path.
+- Non-suffix URLs stay on the existing `yt-dlp` path (no reverse fallback to live).
+- Live playback path:
+  - `ffmpeg` subprocess decodes input to PCM:
+    - `-ac 2 -ar 44100 -f s16le pipe:1`
+  - Player is non-seekable (`CanSeek=false`, unknown duration).
+  - UI shows elapsed time + `LIVE`; seek keys no-op.
+- Queue integration:
+  - live URL entries can be `Ready` without a local temp file path.
+  - previous/next and wrap logic treat live entries as playable and avoid resetting them to `Pending`.
 
-- Added mixed local+URL local playlist parsing (`internal/media/playlist.go`) and queue construction for URL entries (`main.go`).
-- Added yt-dlp inactivity watchdog logic in `internal/downloader/downloader.go`:
-  - 15s cap in fetching.
-  - timeout handling in downloading/converting phases.
-  - short user-facing error summaries in UI (`internal/ui/model.go`).
-- Added URL normalization and scheme validation (`http`/`https` only).
-- Added "likely live stream" classification heuristic after timeout.
+Current limitations / scope:
 
-What we learned:
-
-- Current URL playback path is finite-download oriented: `yt-dlp -> temp WAV -> player.New(filePath)`.
-- Many radio endpoints are infinite streams (Shoutcast/Icecast/HLS) and do not produce finite completion behavior.
-- Some endpoints emit enough yt-dlp output to keep naive "any activity" watchdogs alive, while still not making real progress.
-- Example repro URL:
-  - `https://sonic.portalfoxmix.cl:7028/stream/1/`
-  - `curl -I` shows `Content-Type: audio/mpeg` plus ICY headers (`icy-notice`, `icy-br`, etc), which indicates live stream behavior.
-- Even when UI moves from `Fetching info...` to `Starting download...`, it can still hang because there is no finite artifact to finish.
-
-Why this is happening technically:
-
-- `internal/player.Player` expects file-backed, seekable decoders (`audioDecoder` is `io.ReadSeeker` with finite `Length()`).
-- There is no live stream decoder path in `internal/player`.
-- No ffmpeg stream decode path exists in this repo right now; ffmpeg is only used for save-to-mp3.
-
-## Live / HLS Support Ideas (Earlier Proposals)
-
-1. Minimal viable live path (recommended first):
-   - Add `player.NewStream(url)` backed by ffmpeg subprocess:
-     - `ffmpeg -i <url> -f s16le -ac 2 -ar 44100 pipe:1`
-   - Wrap stdout with a non-seekable decoder implementation.
-   - Expose `CanSeek=false` and unknown duration for live tracks.
-   - UI behavior for live:
-     - disable left/right seek.
-     - show `LIVE` instead of normal duration/progress semantics.
-
-2. URL routing strategy:
-   - Keep existing yt-dlp finite-download path for YouTube and normal URLs.
-   - Route direct stream URLs (`.m3u8`, ICY stream URLs, direct audio stream endpoints) to `player.NewStream`.
-   - Fallback order:
-     - try live stream path first for stream-like URLs.
-     - on setup failure, fallback to yt-dlp path when appropriate.
-
-3. Robust ffmpeg settings for unstable live streams:
-   - include reconnect flags (`-reconnect 1`, `-reconnect_streamed 1`, etc) where supported.
-   - keep startup timeout and surface concise errors.
-
-4. Queue integration:
-   - Allow queue tracks that represent live URLs.
-   - Skip failed live tracks the same way failed download tracks are skipped.
-   - Keep repeat/shuffle semantics consistent.
-
-5. Test plan for live support:
-   - unit tests for URL classification and seek-disabled behavior.
-   - manual smoke tests with known ICY/HLS live URLs.
-   - verify no regressions for current local-file and YouTube finite-download flows.
-
-Notes for next agent:
-
-- Do not market `.m3u8` URL support as complete until live path exists.
-- If not implementing live path yet, position current behavior as fail-fast + skip only.
+- URL live detection is suffix-only by design (predictable, low complexity).
+- No app-level retry loop for live startup beyond ffmpeg reconnect flags.
+- Save (`s`) remains download-only; no live recording mode.

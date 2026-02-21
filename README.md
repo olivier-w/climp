@@ -17,7 +17,7 @@ Run `climp` with no arguments to browse and select files interactively.
 
 ## url support
 
-Play audio from URLs using [yt-dlp](https://github.com/yt-dlp/yt-dlp):
+Play audio from URLs using [yt-dlp](https://github.com/yt-dlp/yt-dlp) (finite downloads) and `ffmpeg` (live streams):
 
 ```bash
 climp https://youtube.com/watch?v=dQw4w9WgXcQ
@@ -25,7 +25,16 @@ climp https://youtube.com/watch?v=dQw4w9WgXcQ
 
 Requires `yt-dlp` to be installed. climp will show install instructions if it's missing. Downloads as WAV for faster processing — press `s` during playback to save as MP3 (requires `ffmpeg`).
 Live stream URLs ending in `.m3u8`, `.m3u`, or `.aac` are routed to a live playback path via `ffmpeg` (`ffmpeg -i <url> -> PCM`). If live setup fails, climp falls back to the existing `yt-dlp` download path for that URL. Non-suffix URLs continue to use the `yt-dlp` path directly.
+Live playback requires `ffmpeg` to be installed.
 If yt-dlp shows no activity for 15 seconds, climp fails fast instead of hanging.
+
+Live URL examples:
+
+```bash
+climp https://example.com/station.m3u8
+climp https://example.com/station.m3u
+climp https://example.com/stream.aac
+```
 
 ![url playback demo](demo/url-fixed.gif)
 
@@ -49,7 +58,7 @@ climp my-playlist.m3u8
 climp my-playlist.pls
 ```
 
-For local playlist files, climp plays valid local media entries and `http(s)` URL entries. Invalid or unsupported entries are skipped. If no playable entries remain, playback fails with an error.
+For local playlist files, climp plays valid local media entries and `http(s)` URL entries. URL entries ending in `.m3u8`, `.m3u`, or `.aac` use the live ffmpeg path; other URL entries use the yt-dlp download path. Invalid or unsupported entries are skipped. If no playable entries remain, playback fails with an error.
 
 ### youtube playlists
 
@@ -109,6 +118,7 @@ climp track.flac
 climp my-playlist.m3u
 climp https://youtube.com/watch?v=...
 climp https://youtube.com/playlist?list=...
+climp https://example.com/station.m3u8
 ```
 
 ## keybindings

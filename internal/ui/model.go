@@ -3,8 +3,10 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/list"
@@ -61,7 +63,8 @@ type Model struct {
 	transitioning    bool         // waiting for a track to finish downloading
 	transitionTarget int          // queue index we're waiting to play (-1 if not jumping)
 
-	originalURL string // original URL for deferred playlist extraction
+	originalURL  string // original URL for deferred playlist extraction
+	playlistName string // queue label shown in header for playlist mode
 
 	keys keyMap
 	help help.Model
@@ -238,6 +241,18 @@ func (m *Model) rebuildHeaderCache() {
 	} else if m.metadata.Album != "" {
 		sb.WriteString("  ")
 		sb.WriteString(artistStyle.Render(m.metadata.Album))
+		sb.WriteByte('\n')
+	}
+
+	if m.queue != nil && m.queue.Len() > 1 {
+		label := normalizePlaylistLabel(m.playlistName)
+		maxLabelWidth := m.effectiveWidth() - len("Playlist: ")
+		if maxLabelWidth < 1 {
+			maxLabelWidth = 1
+		}
+		label = truncateLabel(label, maxLabelWidth)
+		sb.WriteString("  ")
+		sb.WriteString(statusStyle.Render("Playlist: " + label))
 		sb.WriteByte('\n')
 	}
 
@@ -431,12 +446,14 @@ func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string)
 }
 
 // NewWithQueue creates a Model with playlist queue support.
-func NewWithQueue(p *player.Player, meta player.Metadata, sourcePath string, q *queue.Queue) Model {
+func NewWithQueue(p *player.Player, meta player.Metadata, sourcePath string, q *queue.Queue, playlistName string) Model {
 	m := New(p, meta, sourcePath, "")
 	m.queue = q
+	m.playlistName = normalizePlaylistLabel(playlistName)
 	m.queueList = newQueueList(50)
 	m.syncQueueList()
 	m.rebuildQueueViewCache()
+	m.rebuildHeaderCache()
 	return m
 }
 
@@ -873,7 +890,7 @@ func (m Model) removeSelected() (Model, tea.Cmd) {
 			m.queueList.Select(sel - 1)
 		}
 	}
-	m.invalidate(dirtyQueue)
+	m.invalidate(dirtyHeader | dirtyQueue)
 	return m, nil
 }
 
@@ -1041,7 +1058,8 @@ func (m Model) handlePlaylistExtracted(msg playlistExtractedMsg) (Model, tea.Cmd
 	}
 	m.queueList = newQueueList(w - 4)
 	m.updateQueueHeight()
-	m.invalidate(dirtyQueue)
+	m.playlistName = playlistLabelFromURL(m.originalURL)
+	m.invalidate(dirtyHeader | dirtyQueue)
 	m.originalURL = "" // extraction done
 
 	// Start downloading the next track.
@@ -1243,6 +1261,52 @@ func windowTitle(title string, paused bool) string {
 		return "⏸ " + title + " — climp"
 	}
 	return "▶ " + title + " — climp"
+}
+
+func normalizePlaylistLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return "Playlist"
+	}
+	var b strings.Builder
+	b.Grow(len(label))
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	clean := strings.TrimSpace(b.String())
+	if clean == "" {
+		return "Playlist"
+	}
+	return clean
+}
+
+func playlistLabelFromURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "Playlist"
+	}
+	host := normalizePlaylistLabel(u.Hostname())
+	if host == "Playlist" {
+		return "Playlist"
+	}
+	return "Playlist (" + host + ")"
+}
+
+func truncateLabel(label string, maxRunes int) string {
+	if maxRunes < 1 {
+		return ""
+	}
+	r := []rune(label)
+	if len(r) <= maxRunes {
+		return label
+	}
+	if maxRunes <= 3 {
+		return string(r[:maxRunes])
+	}
+	return string(r[:maxRunes-3]) + "..."
 }
 
 func spaces(n int) string {

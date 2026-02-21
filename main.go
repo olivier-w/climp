@@ -21,6 +21,7 @@ func main() {
 	playlistStartIdx := -1
 	var playlistStartCleanup func()
 	var playlistSourcePath string
+	playlistName := ""
 	metaSet := false
 
 	if len(os.Args) < 2 {
@@ -103,6 +104,7 @@ func main() {
 		// Check extension
 		ext := strings.ToLower(filepath.Ext(path))
 		if media.IsPlaylistExt(ext) {
+			playlistName = playlistNameFromFile(path)
 			entries, err := media.ParseLocalPlaylist(path)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -226,9 +228,10 @@ func main() {
 		}
 		q := queue.New(tracks)
 		q.SetCurrentIndex(playlistStartIdx)
-		model = ui.NewWithQueue(p, meta, playlistSourcePath, q)
+		model = ui.NewWithQueue(p, meta, playlistSourcePath, q, playlistName)
 	} else if siblings := scanAudioFiles(path); siblings != nil {
 		// Build queue from sibling audio files in the same directory
+		playlistName = playlistNameFromDirectoryOfFile(path)
 		tracks := make([]queue.Track, len(siblings))
 		var startIdx int
 		absPath, _ := filepath.Abs(path)
@@ -245,7 +248,7 @@ func main() {
 		tracks[startIdx].State = queue.Playing
 		q := queue.New(tracks)
 		q.SetCurrentIndex(startIdx)
-		model = ui.NewWithQueue(p, meta, "", q)
+		model = ui.NewWithQueue(p, meta, "", q, playlistName)
 	} else {
 		model = ui.New(p, meta, "", "")
 	}
@@ -290,6 +293,28 @@ func scanAudioFiles(path string) []string {
 	})
 
 	return files
+}
+
+func playlistNameFromFile(path string) string {
+	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return "Playlist"
+	}
+	return name
+}
+
+func playlistNameFromDirectoryOfFile(path string) string {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		absPath = path
+	}
+	dir := filepath.Dir(absPath)
+	name := strings.TrimSpace(filepath.Base(dir))
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return "Playlist"
+	}
+	return name
 }
 
 func downloadURL(url string) (ui.DownloadResult, error) {

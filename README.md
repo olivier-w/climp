@@ -71,6 +71,8 @@ climp https://youtube.com/watch?v=xxx&list=RDxxx   # radio/mix
 
 Use `n`/`p` to skip between tracks, `j`/`k` to scroll the queue, `enter` to jump to a selected track, and `del` to remove a track. Repeat mode (`r`) cycles through off, repeat song, and repeat playlist. Shuffle mode (`z`) randomizes playback order without reordering the queue — the current track stays put and the rest are shuffled. Works with repeat playlist to re-shuffle at the end of each cycle. Speed control (`x`) cycles through 1x, 2x, and 0.5x playback speed — pitch shifts proportionally.
 
+When playlist mode is active, the header shows a playlist label (`Playlist: ...`) so you can quickly tell what queue you are in.
+
 ![playlist demo](demo/playlist.gif)
 
 ## visualizer

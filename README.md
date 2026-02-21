@@ -24,7 +24,7 @@ climp https://youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
 Requires `yt-dlp` to be installed. climp will show install instructions if it's missing. Downloads as WAV for faster processing — press `s` during playback to save as MP3 (requires `ffmpeg`).
-Live stream URLs ending in `.m3u8`, `.m3u`, or `.aac` are routed to a live playback path via `ffmpeg` (`ffmpeg -i <url> -> PCM`). If live setup fails, climp falls back to the existing `yt-dlp` download path for that URL. Non-suffix URLs continue to use the `yt-dlp` path directly.
+climp probes URL responses before routing playback. It detects remote playlist wrappers (`.pls`, `.m3u`, `.m3u8`), live streams (HLS and ICY/Icecast-style audio, including many `.mp3`, `.ogg`, and no-extension stream endpoints), and finite media downloads. Live URLs use `ffmpeg` (`ffmpeg -i <url> -> PCM`), while finite URLs use `yt-dlp`.
 Live playback requires `ffmpeg` to be installed.
 If yt-dlp shows no activity for 15 seconds, climp fails fast instead of hanging.
 
@@ -34,6 +34,8 @@ Live URL examples:
 climp https://example.com/station.m3u8
 climp https://example.com/station.m3u
 climp https://example.com/stream.aac
+climp https://example.com/stream.mp3
+climp https://example.com/stream.ogg
 ```
 
 ![url playback demo](demo/url-fixed.gif)
@@ -58,7 +60,7 @@ climp my-playlist.m3u8
 climp my-playlist.pls
 ```
 
-For local playlist files, climp plays valid local media entries and `http(s)` URL entries. URL entries ending in `.m3u8`, `.m3u`, or `.aac` use the live ffmpeg path; other URL entries use the yt-dlp download path. Invalid or unsupported entries are skipped. If no playable entries remain, playback fails with an error.
+For local playlist files, climp plays valid local media entries and `http(s)` URL entries. URL entries are probe-routed the same way as direct URL playback. Remote playlist URL entries (`.pls`/`.m3u`/`.m3u8` wrappers) are expanded inline into queue entries in file order. Invalid or unsupported entries are skipped. If no playable entries remain, playback fails with an error.
 
 ### youtube playlists
 

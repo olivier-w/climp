@@ -9,8 +9,8 @@ This file gives coding agents fast context for working in this repository.
 - Local playback: MP3, WAV, FLAC, OGG
 - URL playback:
   - finite downloads via `yt-dlp`
-  - live streams via `ffmpeg` for suffix-routed URLs (`.m3u8`, `.m3u`, `.aac`)
-- Queue support for local directories, YouTube playlists/radio, and local playlist files with mixed local/live URL entries
+  - live streams via `ffmpeg` for probe-routed live URLs (HLS, ICY/Icecast, many `.mp3`/`.ogg`, and some no-extension endpoints)
+- Queue support for local directories, YouTube playlists/radio, local playlist files, and remote playlist URL expansion (`.pls`/`.m3u` wrappers)
 - Real-time visualizers, progress, repeat, shuffle, speed control
 
 Entry point: `main.go`
@@ -41,6 +41,7 @@ If Go is missing from PATH on Windows, use:
 - `internal/ui/`: Bubble Tea model, key handling, queue UI, download UI
 - `internal/queue/`: playlist ordering, shuffle mapping, navigation
 - `internal/downloader/`: `yt-dlp` integration, playlist extraction, URL classification
+  - probe router: `ResolveURLRoute` / `IsLiveURL` in `internal/downloader/route.go`
 - `internal/visualizer/`: all visualization modes + FFT analysis
 
 ## Visualizer Context
@@ -133,21 +134,31 @@ Notes:
 
 Implemented behavior:
 
-- Live URL routing is intentionally simple and suffix-based via `downloader.IsLiveBySuffix`:
-  - `.m3u8`, `.m3u`, `.aac` -> try `player.NewStream(url)` first.
-- If live setup fails for suffix-routed URLs, fallback is the existing finite `yt-dlp` download path.
-- Non-suffix URLs stay on the existing `yt-dlp` path (no reverse fallback to live).
+- URL routing is probe-first via `downloader.ResolveURLRoute`:
+  - detects remote playlist wrappers (`.pls`, `.m3u`, `.m3u8`)
+  - detects live streams via HLS/ICY/audio-stream signals (including `.mp3`, `.ogg`, and some no-extension stream URLs)
+  - routes remaining URLs to finite `yt-dlp` downloads
+- Direct URL startup:
+  - live route -> try `player.NewStream(url)` first
+  - if live setup fails, fallback is the existing finite `yt-dlp` download path
+- Remote playlist URL behavior:
+  - wrapper URLs are parsed and expanded into queue entries
+  - entries are resolved to absolute HTTP(S) URLs
+  - trailing semicolon URL artifacts (e.g. `http://.../;`) are normalized
+  - nested remote wrappers are expanded recursively with depth cap (`maxRemotePlaylistDepth = 2`)
 - Live playback path:
   - `ffmpeg` subprocess decodes input to PCM:
     - `-ac 2 -ar 44100 -f s16le pipe:1`
   - Player is non-seekable (`CanSeek=false`, unknown duration).
   - UI shows elapsed time + `LIVE`; seek keys no-op.
 - Queue integration:
-  - live URL entries can be `Ready` without a local temp file path.
-  - previous/next and wrap logic treat live entries as playable and avoid resetting them to `Pending`.
+  - live URL entries can be `Ready` without a local temp file path
+  - live-vs-finite checks use `downloader.IsLiveURL` (suffix or cached probe result)
+  - previous/next and wrap logic treat live entries as playable and avoid resetting them to `Pending`
 
 Current limitations / scope:
 
-- URL live detection is suffix-only by design (predictable, low complexity).
+- probe routing adds a small network classification step per URL (timeout-based best effort)
+- if probing fails unexpectedly, current behavior falls back to finite download path
 - No app-level retry loop for live startup beyond ffmpeg reconnect flags.
 - Save (`s`) remains download-only; no live recording mode.

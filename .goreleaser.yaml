@@ -14,6 +14,7 @@ builds:
     goarch:
       - amd64
       - arm64
+    skip: "{{ eq .Env.SCOOP_ONLY \"1\" }}"
     ldflags:
       - -s -w
   - id: linux
@@ -22,6 +23,7 @@ builds:
     goarch:
       - amd64
       - arm64
+    skip: "{{ eq .Env.SCOOP_ONLY \"1\" }}"
     ldflags:
       - -s -w
 
@@ -37,6 +39,9 @@ scoops:
     homepage: https://github.com/olivier-w/climp
     description: Minimal CLI media player
     license: Apache-2.0
+
+release:
+  replace_existing_artifacts: true
 
 changelog:
   sort: asc

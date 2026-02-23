@@ -110,10 +110,7 @@ func newQueueList(width int) list.Model {
 		Foreground(lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#1A1A1A"}).
 		Padding(0, 1)
 	l.Styles.TitleBar = lipgloss.NewStyle().Padding(0, 0, 1, 2)
-	l.SetStatusBarItemName("track", "tracks")
-	l.Styles.StatusBar = lipgloss.NewStyle().
-		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"}).
-		Padding(0, 0, 0, 2)
+	l.SetShowStatusBar(false)
 
 	l.SetShowPagination(false)
 	l.Styles.PaginationStyle = lipgloss.NewStyle().PaddingLeft(2)
@@ -205,7 +202,31 @@ func (m *Model) rebuildQueueViewCache() {
 		m.rebuildBottomCache()
 		return
 	}
-	m.queueViewCache = m.queueList.View()
+	statusBarStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#A49FA5", Dark: "#777777"})
+
+	queueView := m.queueList.View()
+
+	// Build custom header: playlist label (bold) + track count (dim), single line
+	label := normalizePlaylistLabel(m.playlistName)
+	w := m.effectiveWidth()
+	label = truncateLabel(label, w)
+
+	n := m.queue.Len()
+	trackWord := "tracks"
+	if n == 1 {
+		trackWord = "track"
+	}
+	headerLine := "  " + headerStyle.Render(label) + "  " + statusBarStyle.Render(fmt.Sprintf("%d %s", n, trackWord))
+
+	// Insert below the "Up Next" title bar (first 2 lines: title + blank padding).
+	// Add a blank line after header to separate from the list items.
+	lines := strings.SplitN(queueView, "\n", 3)
+	if len(lines) >= 3 {
+		m.queueViewCache = lines[0] + "\n" + lines[1] + "\n" + headerLine + "\n\n" + lines[2]
+	} else {
+		m.queueViewCache = queueView + "\n" + headerLine
+	}
 	p := m.queueList.Paginator
 	if p.TotalPages > 1 {
 		var sb strings.Builder
@@ -241,18 +262,6 @@ func (m *Model) rebuildHeaderCache() {
 	} else if m.metadata.Album != "" {
 		sb.WriteString("  ")
 		sb.WriteString(artistStyle.Render(m.metadata.Album))
-		sb.WriteByte('\n')
-	}
-
-	if m.queue != nil && m.queue.Len() > 1 {
-		label := normalizePlaylistLabel(m.playlistName)
-		maxLabelWidth := m.effectiveWidth() - len("Playlist: ")
-		if maxLabelWidth < 1 {
-			maxLabelWidth = 1
-		}
-		label = truncateLabel(label, maxLabelWidth)
-		sb.WriteString("  ")
-		sb.WriteString(statusStyle.Render("Playlist: " + label))
 		sb.WriteByte('\n')
 	}
 
@@ -350,6 +359,9 @@ func (m *Model) rebuildMidCache() {
 	}
 
 	sb.WriteByte('\n')
+	if m.queue != nil && m.queue.Len() > 1 {
+		sb.WriteByte('\n')
+	}
 	m.midCache = sb.String()
 }
 
@@ -1201,10 +1213,10 @@ func (m Model) effectiveWidth() int {
 }
 
 // fixedLines returns the number of lines used by header, mid section, and help text.
-// This is an approximation: header ~3 + mid ~5 + help ~3 = 11. If the layout
-// changes significantly, this value may need adjustment.
+// Top padding (2) + title (1) + artist (1) + gaps (3) + progress (1) + status (1)
+// + queue gap (1) + help (~3) = ~13. Long titles may wrap for 1-2 extra lines.
 func (m Model) fixedLines() int {
-	return 11
+	return 13
 }
 
 func downloadErrorSummary(err error) string {
@@ -1245,6 +1257,7 @@ func (m *Model) updateQueueHeight() {
 		// Subtract the visualizer height + 1 blank line
 		avail -= m.vizHeight() + 1
 	}
+	avail -= 2 // reserve lines for playlist header + blank line
 	if avail < 6 {
 		avail = 6
 	}

@@ -54,6 +54,7 @@ climp track.flac
 climp my-playlist.m3u
 climp https://youtube.com/watch?v=...
 climp https://youtube.com/playlist?list=...
+climp "https://youtube.com/watch?v=...&list=..."
 climp https://example.com/station.m3u8
 climp -h
 climp --help
@@ -62,6 +63,8 @@ climp --version
 ```
 
 `climp` with no arguments opens the file browser. `-h` / `--help` print startup usage, and `-v` / `--version` print the binary version and exit. Release binaries print the release tag, while dev builds print a tag-derived `-dev` version when run from a git checkout and fall back to `dev` otherwise.
+
+If a URL contains `&` (common for YouTube playlist or radio links), wrap it in quotes so your shell passes the full URL to `climp`.
 
 ## Keybindings
 
@@ -159,7 +162,7 @@ YouTube playlist and radio URLs are auto-detected. The first track starts immedi
 
 ```bash
 climp https://youtube.com/playlist?list=PLxxxxxxxx
-climp https://youtube.com/watch?v=xxx&list=RDxxx
+climp "https://youtube.com/watch?v=xxx&list=RDxxx"
 ```
 
 ![playlist demo](demo/playlist.gif)

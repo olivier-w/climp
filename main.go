@@ -255,6 +255,10 @@ func printHelp() {
 	fmt.Println("Flags:")
 	fmt.Println("  -h, --help")
 	fmt.Println("  -v, --version")
+	fmt.Println()
+	fmt.Println("Notes:")
+	fmt.Println("  Wrap URLs containing \"&\" in quotes so your shell passes the full URL to climp.")
+	fmt.Println("  Example: climp \"https://youtube.com/watch?v=xxx&list=RDxxx\"")
 }
 
 func printVersion() {

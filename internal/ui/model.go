@@ -474,7 +474,7 @@ func NewWithQueue(p *player.Player, meta player.Metadata, sourcePath string, q *
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{tickCmd(), checkDone(m.player), tea.SetWindowTitle(windowTitle(m.metadata.Title, false))}
+	cmds := []tea.Cmd{tickCmd(), checkDone(m.player), waitForLiveTitle(m.player), tea.SetWindowTitle(windowTitle(m.metadata.Title, false))}
 	if m.queue != nil {
 		next := m.queue.Next()
 		if next != nil && next.State == queue.Pending {
@@ -492,6 +492,23 @@ func checkDone(p *player.Player) tea.Cmd {
 	return func() tea.Msg {
 		<-p.Done()
 		return playbackEndedMsg{player: p}
+	}
+}
+
+func waitForLiveTitle(p *player.Player) tea.Cmd {
+	if p == nil {
+		return nil
+	}
+	updates := p.TitleUpdates()
+	if updates == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		title, ok := <-updates
+		if !ok {
+			return nil
+		}
+		return liveTitleUpdatedMsg{player: p, title: title}
 	}
 }
 
@@ -648,6 +665,18 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		m.saveMsgTime = time.Now()
 		m.invalidate(dirtyMid | dirtyBottom)
 		return m, nil
+
+	case liveTitleUpdatedMsg:
+		if msg.player != m.player {
+			return m, nil
+		}
+		next := waitForLiveTitle(m.player)
+		if msg.title == "" || msg.title == m.metadata.Title {
+			return m, next
+		}
+		m.metadata.Title = msg.title
+		m.invalidate(dirtyHeader)
+		return m, tea.Batch(next, tea.SetWindowTitle(windowTitle(m.metadata.Title, m.paused)))
 
 	case tickMsg:
 		if m.player == nil {
@@ -1035,7 +1064,7 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		}
 		m.invalidate(dirtyHeader)
 
-		cmds = append(cmds, checkDone(m.player), tickCmd(), tea.SetWindowTitle(windowTitle(m.metadata.Title, false)))
+		cmds = append(cmds, checkDone(m.player), tickCmd(), waitForLiveTitle(m.player), tea.SetWindowTitle(windowTitle(m.metadata.Title, false)))
 	}
 
 	// Start downloading next undownloaded track
@@ -1141,6 +1170,7 @@ func (m Model) advanceToTrack(track *queue.Track) (Model, tea.Cmd) {
 	cmds := []tea.Cmd{
 		checkDone(m.player),
 		tickCmd(),
+		waitForLiveTitle(m.player),
 		tea.SetWindowTitle(windowTitle(m.metadata.Title, false)),
 		m.startNextDownload(),
 	}
@@ -1276,7 +1306,15 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	return m.headerCache + m.midCache + m.vizCache + m.bottomCache
+	view := m.headerCache + m.midCache + m.vizCache + m.bottomCache
+	if m.height <= 0 {
+		return view
+	}
+	lines := lipgloss.Height(view)
+	if lines >= m.height {
+		return view
+	}
+	return view + strings.Repeat("\n", m.height-lines)
 }
 
 func windowTitle(title string, paused bool) string {

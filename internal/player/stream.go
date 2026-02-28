@@ -16,6 +16,8 @@ const (
 type streamDecoder struct {
 	cmd       *exec.Cmd
 	stdout    io.ReadCloser
+	titleMeta *icyTitleWatcher
+	titles    <-chan string
 	waitDone  chan struct{}
 	closeOnce sync.Once
 }
@@ -52,10 +54,19 @@ func newStreamDecoder(url string) (*streamDecoder, error) {
 		return nil, fmt.Errorf("starting ffmpeg stream: %w", err)
 	}
 
+	titleMeta, err := newICYTitleWatcher(url)
+	if err != nil {
+		titleMeta = nil
+	}
+
 	d := &streamDecoder{
-		cmd:      cmd,
-		stdout:   stdout,
-		waitDone: make(chan struct{}),
+		cmd:       cmd,
+		stdout:    stdout,
+		titleMeta: titleMeta,
+		waitDone:  make(chan struct{}),
+	}
+	if titleMeta != nil {
+		d.titles = titleMeta.Updates()
 	}
 	go func() {
 		_ = cmd.Wait()
@@ -72,12 +83,16 @@ func (d *streamDecoder) Seek(int64, int) (int64, error) {
 	return 0, fmt.Errorf("live stream is not seekable")
 }
 
-func (d *streamDecoder) Length() int64     { return -1 }
-func (d *streamDecoder) SampleRate() int   { return streamSampleRate }
-func (d *streamDecoder) ChannelCount() int { return streamChannels }
+func (d *streamDecoder) TitleUpdates() <-chan string { return d.titles }
+func (d *streamDecoder) Length() int64               { return -1 }
+func (d *streamDecoder) SampleRate() int             { return streamSampleRate }
+func (d *streamDecoder) ChannelCount() int           { return streamChannels }
 
 func (d *streamDecoder) Close() error {
 	d.closeOnce.Do(func() {
+		if d.titleMeta != nil {
+			_ = d.titleMeta.Close()
+		}
 		if d.stdout != nil {
 			_ = d.stdout.Close()
 		}

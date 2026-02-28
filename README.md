@@ -123,6 +123,7 @@ Behavior notes:
 - finite URL downloads use WAV temp files for fast processing
 - if `yt-dlp` reports no progress for 15 seconds, climp exits instead of hanging
 - live streams are non-seekable
+- when a live stream exposes ICY metadata, the now-playing title updates automatically; otherwise climp keeps the original fallback title
 
 Live URL examples:
 

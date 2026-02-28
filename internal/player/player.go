@@ -50,23 +50,28 @@ func (cr *countingReader) SetPos(pos int64) {
 
 // Player manages audio playback.
 type Player struct {
-	file        *os.File
-	decoder     audioDecoder
-	counter     *countingReader
-	sr          *speedReader
-	otoCtx      *oto.Context
-	otoPlayer   *oto.Player
-	duration    time.Duration
-	volume      float64
-	paused      bool
-	done        chan struct{}
-	stopMon     chan struct{} // signals current monitor goroutine to exit
-	mu          sync.Mutex
-	closed      bool
-	bytesPerSec int // immutable after init — safe to read without mutex
-	speed       SpeedMode
-	sampleBuf   *visualizer.RingBuffer
-	canSeek     bool
+	file         *os.File
+	decoder      audioDecoder
+	counter      *countingReader
+	sr           *speedReader
+	otoCtx       *oto.Context
+	otoPlayer    *oto.Player
+	duration     time.Duration
+	volume       float64
+	paused       bool
+	done         chan struct{}
+	stopMon      chan struct{} // signals current monitor goroutine to exit
+	mu           sync.Mutex
+	closed       bool
+	bytesPerSec  int // immutable after init — safe to read without mutex
+	speed        SpeedMode
+	sampleBuf    *visualizer.RingBuffer
+	canSeek      bool
+	titleUpdates <-chan string
+}
+
+type liveTitleProvider interface {
+	TitleUpdates() <-chan string
 }
 
 var (
@@ -180,6 +185,9 @@ func newFromDecoder(file *os.File, dec audioDecoder, canSeek bool) (*Player, err
 		bytesPerSec: bytesPerSec,
 		sampleBuf:   sampleBuf,
 		canSeek:     canSeek,
+	}
+	if provider, ok := dec.(liveTitleProvider); ok {
+		p.titleUpdates = provider.TitleUpdates()
 	}
 
 	p.otoPlayer = ctx.NewPlayer(sr)
@@ -422,6 +430,16 @@ func (p *Player) CanSeek() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.canSeek
+}
+
+// TitleUpdates returns a stream of live title updates for stream-backed players.
+func (p *Player) TitleUpdates() <-chan string {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.titleUpdates
 }
 
 // Samples returns the most recent n int16 samples from the audio stream.

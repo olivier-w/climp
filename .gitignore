@@ -4,6 +4,9 @@ climp.exe
 climp.exe~
 *.exe
 *.mp3
+*.aac
+*.m4a
+*.m4b
 *.m3u
 *.m3u8
 *.pls
@@ -35,6 +38,7 @@ Thumbs.db
 
 # Distribution
 dist/
+songs/
 
 # Internal docs
 docs/

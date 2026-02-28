@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -17,6 +18,7 @@ import (
 )
 
 const maxRemotePlaylistDepth = 2
+var version = "dev"
 
 func main() {
 	var arg string
@@ -26,6 +28,17 @@ func main() {
 	var playlistSourcePath string
 	playlistName := ""
 	metaSet := false
+
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "-h", "--help":
+			printHelp()
+			return
+		case "-v", "--version":
+			printVersion()
+			return
+		}
+	}
 
 	if len(os.Args) < 2 {
 		browser := ui.NewBrowser()
@@ -434,4 +447,50 @@ func downloadURL(url string) (ui.DownloadResult, error) {
 		return ui.DownloadResult{}, fmt.Errorf("unexpected model type from downloader")
 	}
 	return dm.Result(), nil
+}
+
+func printHelp() {
+	fmt.Println("climp - Minimal CLI media player for local files, URLs, and playlists.")
+	fmt.Println()
+	fmt.Println("Usage:")
+	fmt.Println("  climp")
+	fmt.Println("  climp <file|playlist|url>")
+	fmt.Println()
+	fmt.Println("Flags:")
+	fmt.Println("  -h, --help")
+	fmt.Println("  -v, --version")
+}
+
+func printVersion() {
+	fmt.Printf("climp %s\n", displayVersion())
+}
+
+func displayVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if gitVersion, ok := gitTaggedDevVersion(); ok {
+		return gitVersion
+	}
+	return version
+}
+
+func gitTaggedDevVersion() (string, bool) {
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", false
+	}
+
+	cmd := exec.Command("git", "describe", "--tags", "--abbrev=0")
+	cmd.Dir = filepath.Dir(exePath)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+
+	tag := strings.TrimSpace(string(output))
+	if tag == "" {
+		return "", false
+	}
+	return tag + "-dev", true
 }

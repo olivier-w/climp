@@ -61,7 +61,7 @@ jobs:
           if [ "${{ matrix.os }}" = "windows" ]; then
             out="${out}.exe"
           fi
-          go build -ldflags "-s -w" -o "$out" .
+          go build -ldflags "-s -w -X main.version=${{ github.ref_name }}" -o "$out" .
 
       - name: Create tar.gz archive
         if: matrix.os != 'windows'
@@ -71,11 +71,38 @@ jobs:
           cd dist
           tar -czf "climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}.tar.gz" "climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}"
 
+      - name: Verify binary version
+        if: matrix.os != 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="dist/climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}/climp"
+          actual="$("$out" --version)"
+          expected="climp ${{ github.ref_name }}"
+          if [ "$actual" != "$expected" ]; then
+            echo "unexpected version output: $actual"
+            echo "expected: $expected"
+            exit 1
+          fi
+
       - name: Create zip archive
         if: matrix.os == 'windows'
         shell: pwsh
         run: |
           Compress-Archive -Path "dist/climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}/*" -DestinationPath "dist/climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}.zip"
+
+      - name: Verify binary version
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          $out = "dist/climp_${{ github.ref_name }}_${{ matrix.os }}_${{ matrix.arch }}/climp.exe"
+          $actual = & $out --version
+          $expected = "climp ${{ github.ref_name }}"
+          if ($actual -ne $expected) {
+            Write-Host "unexpected version output: $actual"
+            Write-Host "expected: $expected"
+            exit 1
+          }
 
       - name: Upload tar artifact
         if: matrix.os != 'windows'

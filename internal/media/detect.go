@@ -7,6 +7,9 @@ var audioExts = map[string]bool{
 	".wav":  true,
 	".flac": true,
 	".ogg":  true,
+	".aac":  true,
+	".m4a":  true,
+	".m4b":  true,
 }
 
 var playlistExts = map[string]bool{
@@ -27,5 +30,5 @@ func IsPlaylistExt(ext string) bool {
 
 // SupportedExtsList returns a human-readable list of supported playable media formats.
 func SupportedExtsList() string {
-	return ".mp3, .wav, .flac, .ogg"
+	return ".mp3, .wav, .flac, .ogg, .aac, .m4a, .m4b"
 }

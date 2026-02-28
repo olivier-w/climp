@@ -68,6 +68,7 @@ type Player struct {
 	sampleBuf    *visualizer.RingBuffer
 	canSeek      bool
 	titleUpdates <-chan string
+	cleanup      func()
 }
 
 type liveTitleProvider interface {
@@ -124,18 +125,42 @@ func friendlyAudioInitError(err error) error {
 
 // New creates a new Player for the given audio file path.
 func New(path string) (*Player, error) {
-	f, err := os.Open(path)
+	openPath := path
+	var cleanup func()
+	if needsLocalFFmpegTranscode(path) {
+		var err error
+		openPath, cleanup, err = transcodeToTempWAV(path)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	f, err := os.Open(openPath)
 	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
 		return nil, err
 	}
 
 	dec, err := newDecoder(f)
 	if err != nil {
 		f.Close()
+		if cleanup != nil {
+			cleanup()
+		}
 		return nil, err
 	}
 
-	return newFromDecoder(f, dec, true)
+	p, err := newFromDecoder(f, dec, true)
+	if err != nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		return nil, err
+	}
+	p.cleanup = cleanup
+	return p, nil
 }
 
 // NewStream creates a new Player for a live URL stream decoded by ffmpeg.
@@ -472,12 +497,20 @@ func (p *Player) Close() {
 		return
 	}
 	p.closed = true
-	close(p.stopMon)
-	p.otoPlayer.Pause()
+	if p.stopMon != nil {
+		close(p.stopMon)
+	}
+	if p.otoPlayer != nil {
+		p.otoPlayer.Pause()
+	}
 	if p.file != nil {
 		p.file.Close()
 	}
 	if c, ok := p.decoder.(io.Closer); ok {
 		c.Close()
+	}
+	if p.cleanup != nil {
+		p.cleanup()
+		p.cleanup = nil
 	}
 }

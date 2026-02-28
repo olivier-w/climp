@@ -90,7 +90,7 @@ If a URL contains `&` (common for YouTube playlist or radio links), wrap it in q
 
 ## Format support
 
-- audio: `.mp3`, `.wav`, `.flac`, `.ogg`
+- audio: `.mp3`, `.wav`, `.flac`, `.ogg`, `.aac`, `.m4a`, `.m4b`
 - playlists: `.m3u`, `.m3u8`, `.pls`
 
 ## File browser
@@ -117,6 +117,7 @@ Requirements:
 - `yt-dlp` is required for finite URL playback and YouTube sources
 - `ffmpeg` is required for live URL playback
 - `ffmpeg` is also required for `s` (save as MP3) on downloaded URL tracks
+- `ffmpeg` is also required for local `.aac`, `.m4a`, and `.m4b` playback
 
 Behavior notes:
 
@@ -124,6 +125,9 @@ Behavior notes:
 - if `yt-dlp` reports no progress for 15 seconds, climp exits instead of hanging
 - live streams are non-seekable
 - when a live stream exposes ICY metadata, the now-playing title updates automatically; otherwise climp keeps the original fallback title
+- local `.aac`, `.m4a`, and `.m4b` files are decoded by temporarily converting them to WAV with `ffmpeg`
+- large `.m4a` and `.m4b` files may take longer to start and use additional temporary disk space
+- `.m4b` support is playback-only; chapter support is not included
 
 Live URL examples:
 

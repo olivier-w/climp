@@ -13,22 +13,14 @@ import (
 	"github.com/olivier-w/climp/internal/downloader"
 	"github.com/olivier-w/climp/internal/media"
 	"github.com/olivier-w/climp/internal/player"
-	"github.com/olivier-w/climp/internal/queue"
 	"github.com/olivier-w/climp/internal/ui"
 )
 
 const maxRemotePlaylistDepth = 2
+
 var version = "dev"
 
 func main() {
-	var arg string
-	var playlistEntries []media.PlaylistEntry
-	playlistStartIdx := -1
-	var playlistStartCleanup func()
-	var playlistSourcePath string
-	playlistName := ""
-	metaSet := false
-
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
 		case "-h", "--help":
@@ -41,219 +33,21 @@ func main() {
 	}
 
 	if len(os.Args) < 2 {
-		browser := ui.NewBrowser()
-		p := tea.NewProgram(browser, tea.WithAltScreen())
-		finalModel, err := p.Run()
-		if err != nil {
+		program := tea.NewProgram(newStartupModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
+		if _, err := program.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-
-		bm, ok := finalModel.(ui.BrowserModel)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "Error: unexpected model type from browser\n")
-			os.Exit(1)
-		}
-		result := bm.Result()
-		if result.Cancelled {
-			os.Exit(0)
-		}
-		arg = result.Path
-	} else {
-		arg = os.Args[1]
+		return
 	}
 
-	var path string
-	var sourcePath string
-	var originalURL string
-	var meta player.Metadata
-	var p *player.Player
-	if downloader.IsURL(arg) {
-		route, err := downloader.ResolveURLRoute(arg)
-		if err != nil {
-			route = downloader.URLRouteResult{
-				Kind:     downloader.RouteFiniteDownload,
-				FinalURL: arg,
-			}
-		}
-		if route.FinalURL == "" {
-			route.FinalURL = arg
-		}
-		if route.Kind == downloader.RouteRemotePlaylist {
-			playlistName = playlistNameFromURL(arg)
-			playlistEntries = expandRemotePlaylistEntries(route.Playlist, maxRemotePlaylistDepth)
-			if len(playlistEntries) == 0 {
-				fmt.Fprintf(os.Stderr, "Error: playlist contains no playable entries\n")
-				os.Exit(1)
-			}
-		} else {
-			openedLive := false
-			if route.Kind == downloader.RouteLiveStream {
-				p, err = player.NewStream(route.FinalURL)
-				if err == nil {
-					openedLive = true
-					meta = player.Metadata{Title: route.FinalURL}
-					metaSet = true
-				}
-			}
-			if !openedLive {
-				result, err := downloadURL(route.FinalURL)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-					os.Exit(1)
-				}
-				if result.Err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %v\n", result.Err)
-					os.Exit(1)
-				}
-				if result.Cleanup != nil {
-					defer result.Cleanup()
-				}
-				path = result.Path
-				sourcePath = result.Path
-				originalURL = arg
-
-				if result.Title != "" {
-					meta = player.Metadata{Title: result.Title}
-				} else {
-					meta = player.ReadMetadata(path)
-				}
-				metaSet = true
-			}
-		}
-	} else {
-		path = arg
-
-		// Check file exists
-		info, err := os.Stat(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		if info.IsDir() {
-			fmt.Fprintf(os.Stderr, "Error: %s is a directory\n", path)
-			os.Exit(1)
-		}
-
-		// Check extension
-		ext := strings.ToLower(filepath.Ext(path))
-		if media.IsPlaylistExt(ext) {
-			playlistName = playlistNameFromFile(path)
-			entries, err := media.ParseLocalPlaylist(path)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			playlistEntries, _ = media.FilterPlayablePlaylistEntries(entries)
-			playlistEntries = expandRemotePlaylistEntries(playlistEntries, maxRemotePlaylistDepth)
-			if len(playlistEntries) == 0 {
-				fmt.Fprintf(os.Stderr, "Error: playlist contains no playable entries\n")
-				os.Exit(1)
-			}
-		} else if !media.IsSupportedExt(ext) {
-			fmt.Fprintf(os.Stderr, "Error: unsupported format %s (supported: %s)\n", ext, media.SupportedExtsList())
-			os.Exit(1)
-		}
+	model, err := buildPlaybackModel(os.Args[1], downloadURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
-	if len(playlistEntries) > 0 {
-		updatedEntries, start, err := openFirstPlayablePlaylistEntry(playlistEntries)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		playlistEntries = updatedEntries
-		playlistStartIdx = start.startIdx
-		playlistStartCleanup = start.cleanup
-		playlistSourcePath = start.sourcePath
-		if start.path != "" {
-			path = start.path
-		}
-		if start.player != nil {
-			p = start.player
-			path = ""
-		}
-		if start.metaSet {
-			meta = start.meta
-			metaSet = true
-		}
-	}
-
-	// Read metadata for local files
-	if !metaSet {
-		meta = player.ReadMetadata(path)
-	}
-
-	// Create audio player
-	if p == nil {
-		var err error
-		p, err = player.New(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error creating player: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	defer p.Close()
-
-	// Create and run TUI
-	var model ui.Model
-	if len(playlistEntries) > 0 {
-		// Build queue from playlist entries in file order.
-		tracks := make([]queue.Track, len(playlistEntries))
-		for i, e := range playlistEntries {
-			title := e.Title
-			if title == "" && e.Path != "" {
-				title = strings.TrimSuffix(filepath.Base(e.Path), filepath.Ext(e.Path))
-			}
-			if title == "" && e.URL != "" {
-				title = e.URL
-			}
-
-			tracks[i] = queue.Track{
-				Title: title,
-				URL:   e.URL,
-				Path:  e.Path,
-			}
-			if e.URL != "" && e.Path == "" && !downloader.IsLiveURL(e.URL) {
-				tracks[i].State = queue.Pending
-			} else {
-				tracks[i].State = queue.Ready
-			}
-		}
-		tracks[playlistStartIdx].State = queue.Playing
-		if playlistStartCleanup != nil {
-			tracks[playlistStartIdx].Cleanup = playlistStartCleanup
-		}
-		q := queue.New(tracks)
-		q.SetCurrentIndex(playlistStartIdx)
-		model = ui.NewWithQueue(p, meta, playlistSourcePath, q, playlistName)
-	} else if downloader.IsURL(arg) {
-		model = ui.New(p, meta, sourcePath, originalURL)
-	} else if siblings := scanAudioFiles(path); siblings != nil {
-		// Build queue from sibling audio files in the same directory
-		playlistName = playlistNameFromDirectoryOfFile(path)
-		tracks := make([]queue.Track, len(siblings))
-		var startIdx int
-		absPath, _ := filepath.Abs(path)
-		for i, f := range siblings {
-			tracks[i] = queue.Track{
-				Title: strings.TrimSuffix(filepath.Base(f), filepath.Ext(f)),
-				Path:  f,
-				State: queue.Ready,
-			}
-			if f == absPath {
-				startIdx = i
-			}
-		}
-		tracks[startIdx].State = queue.Playing
-		q := queue.New(tracks)
-		q.SetCurrentIndex(startIdx)
-		model = ui.NewWithQueue(p, meta, "", q, playlistName)
-	} else {
-		model = ui.New(p, meta, "", "")
-	}
 	program := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
-
 	if _, err := program.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -339,7 +133,9 @@ type playlistStart struct {
 	cleanup    func()
 }
 
-func openFirstPlayablePlaylistEntry(entries []media.PlaylistEntry) ([]media.PlaylistEntry, playlistStart, error) {
+type urlDownloadFunc func(string) (ui.DownloadResult, error)
+
+func openFirstPlayablePlaylistEntry(entries []media.PlaylistEntry, downloadURL urlDownloadFunc) ([]media.PlaylistEntry, playlistStart, error) {
 	start := playlistStart{startIdx: -1}
 	for i := range entries {
 		e := &entries[i]

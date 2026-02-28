@@ -26,9 +26,9 @@ go install github.com/olivier-w/climp@latest
 ```
 
 ### Download [prebuilt binaries](https://github.com/olivier-w/climp/releases) for:
-- Linux [`amd64`](https://github.com/olivier-w/climp/releases/download/v0.2.3/climp_v0.2.3_linux_amd64.tar.gz), [`arm64`](https://github.com/olivier-w/climp/releases/download/v0.2.3/climp_v0.2.3_linux_arm64.tar.gz)
-- macOS [`amd64` (intel)](https://github.com/olivier-w/climp/releases/download/v0.2.3/climp_v0.2.3_darwin_amd64.tar.gz), [`arm64` (m1,m2,m3,m4,m5)](https://github.com/olivier-w/climp/releases/download/v0.2.3/climp_v0.2.3_darwin_arm64.tar.gz)
-- Windows [`amd64`](https://github.com/olivier-w/climp/releases/download/v0.2.3/climp_0.2.3_windows_amd64.zip)
+- Linux [`amd64`](https://github.com/olivier-w/climp/releases/download/v0.3.0/climp_v0.3.0_linux_amd64.tar.gz), [`arm64`](https://github.com/olivier-w/climp/releases/download/v0.3.0/climp_v0.3.0_linux_arm64.tar.gz)
+- macOS [`amd64` (intel)](https://github.com/olivier-w/climp/releases/download/v0.3.0/climp_v0.3.0_darwin_amd64.tar.gz), [`arm64` (m1,m2,m3,m4,m5)](https://github.com/olivier-w/climp/releases/download/v0.3.0/climp_v0.3.0_darwin_arm64.tar.gz)
+- Windows [`amd64`](https://github.com/olivier-w/climp/releases/download/v0.3.0/climp_v0.3.0_windows_amd64.zip)
 
 ### Windows [scoop](https://scoop.sh/)
 

@@ -98,14 +98,14 @@ function Update-ReadmeReleaseLinks {
 
     $content = Get-Content $ReadmePath -Raw
 
-    $linuxLine = "- Linux [`amd64`](https://github.com/olivier-w/climp/releases/download/$ReleaseVersion/climp_${ReleaseVersion}_linux_amd64.tar.gz), [`arm64`](https://github.com/olivier-w/climp/releases/download/$ReleaseVersion/climp_${ReleaseVersion}_linux_arm64.tar.gz)"
-    $darwinLine = "- macOS [`amd64` (intel)](https://github.com/olivier-w/climp/releases/download/$ReleaseVersion/climp_${ReleaseVersion}_darwin_amd64.tar.gz), [`arm64` (m1,m2,m3,m4,m5)](https://github.com/olivier-w/climp/releases/download/$ReleaseVersion/climp_${ReleaseVersion}_darwin_arm64.tar.gz)"
-    $windowsLine = "- Windows [`amd64`](https://github.com/olivier-w/climp/releases/download/$ReleaseVersion/climp_${ReleaseVersion}_windows_amd64.zip)"
+    $linuxLine = '- Linux [`amd64`](https://github.com/olivier-w/climp/releases/download/__VERSION__/climp___VERSION___linux_amd64.tar.gz), [`arm64`](https://github.com/olivier-w/climp/releases/download/__VERSION__/climp___VERSION___linux_arm64.tar.gz)'.Replace('__VERSION__', $ReleaseVersion)
+    $darwinLine = '- macOS [`amd64` (intel)](https://github.com/olivier-w/climp/releases/download/__VERSION__/climp___VERSION___darwin_amd64.tar.gz), [`arm64` (m1,m2,m3,m4,m5)](https://github.com/olivier-w/climp/releases/download/__VERSION__/climp___VERSION___darwin_arm64.tar.gz)'.Replace('__VERSION__', $ReleaseVersion)
+    $windowsLine = '- Windows [`amd64`](https://github.com/olivier-w/climp/releases/download/__VERSION__/climp___VERSION___windows_amd64.zip)'.Replace('__VERSION__', $ReleaseVersion)
 
     $updated = $content
-    $updated = [regex]::Replace($updated, "(?m)^- Linux \[`amd64`\]\(https://github\.com/olivier-w/climp/releases/download/v\d+\.\d+\.\d+/climp_v?\d+\.\d+\.\d+_linux_amd64\.tar\.gz\), \[`arm64`\]\(https://github\.com/olivier-w/climp/releases/download/v\d+\.\d+\.\d+/climp_v?\d+\.\d+\.\d+_linux_arm64\.tar\.gz\)$", [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $linuxLine })
-    $updated = [regex]::Replace($updated, "(?m)^- macOS \[`amd64` \(intel\)\]\(https://github\.com/olivier-w/climp/releases/download/v\d+\.\d+\.\d+/climp_v?\d+\.\d+\.\d+_darwin_amd64\.tar\.gz\), \[`arm64` \(m1,m2,m3,m4,m5\)\]\(https://github\.com/olivier-w/climp/releases/download/v\d+\.\d+\.\d+/climp_v?\d+\.\d+\.\d+_darwin_arm64\.tar\.gz\)$", [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $darwinLine })
-    $updated = [regex]::Replace($updated, "(?m)^- Windows \[`amd64`\]\(https://github\.com/olivier-w/climp/releases/download/v\d+\.\d+\.\d+/climp_v?\d+\.\d+\.\d+_windows_amd64\.zip\)$", [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $windowsLine })
+    $updated = [regex]::Replace($updated, '(?m)^- Linux .*$'  , [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $linuxLine }, 1)
+    $updated = [regex]::Replace($updated, '(?m)^- macOS .*$'  , [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $darwinLine }, 1)
+    $updated = [regex]::Replace($updated, '(?m)^- Windows .*$', [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $windowsLine }, 1)
 
     if ($updated -eq $content) {
         Write-Host "README release links already match $ReleaseVersion."
@@ -113,7 +113,8 @@ function Update-ReadmeReleaseLinks {
     }
 
     if ($PSCmdlet.ShouldProcess($ReadmePath, "Update README release links to $ReleaseVersion")) {
-        Set-Content -Path $ReadmePath -Value $updated
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($ReadmePath, $updated, $utf8NoBom)
         Write-Host "Updated README release links to $ReleaseVersion."
     }
 }
@@ -128,8 +129,8 @@ try {
     Require-Command -Name "gh" | Out-Null
 
     $currentBranch = Get-GitOutput -ArgumentList @("branch", "--show-current")
-    $ignoredStatus = Get-GitOutput -ArgumentList @("status", "--short", "--", "RELEASING.md", "scripts/release.ps1")
-    $blockingStatus = Get-GitOutput -ArgumentList @("status", "--short", "--", ".", ":(exclude)RELEASING.md", ":(exclude)scripts/release.ps1")
+    $ignoredStatus = Get-GitOutput -ArgumentList @("status", "--short", "--", "README.md", "RELEASING.md", "scripts/release.ps1")
+    $blockingStatus = Get-GitOutput -ArgumentList @("status", "--short", "--", ".", ":(exclude)README.md", ":(exclude)RELEASING.md", ":(exclude)scripts/release.ps1")
     $latestTag = Get-Latest-Tag
     $existingTag = Get-Existing-Tag -TagName $normalizedVersion
 

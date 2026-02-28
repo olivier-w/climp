@@ -1,8 +1,10 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/olivier-w/climp/internal/player"
 	"github.com/olivier-w/climp/internal/queue"
 )
@@ -63,5 +65,22 @@ func TestHandleLiveTitleUpdatedMsgLeavesQueueUntouched(t *testing.T) {
 	}
 	if got := next.queue.Track(0).Title; got != "Live Station" {
 		t.Fatalf("expected queue title unchanged, got %q", got)
+	}
+}
+
+func TestViewPadsToWindowHeight(t *testing.T) {
+	m := Model{
+		height:      8,
+		headerCache: "\n  title\n\n",
+		midCache:    "  status\n\n",
+		bottomCache: "\n  help\n",
+	}
+
+	view := m.View()
+	if lipgloss.Height(view) < 8 {
+		t.Fatalf("expected padded view height >= 8, got %d", lipgloss.Height(view))
+	}
+	if !strings.Contains(view, "  help\n") {
+		t.Fatalf("expected help content in padded view, got %q", view)
 	}
 }

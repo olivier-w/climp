@@ -1306,7 +1306,15 @@ func (m Model) View() string {
 	if m.quitting {
 		return ""
 	}
-	return m.headerCache + m.midCache + m.vizCache + m.bottomCache
+	view := m.headerCache + m.midCache + m.vizCache + m.bottomCache
+	if m.height <= 0 {
+		return view
+	}
+	lines := lipgloss.Height(view)
+	if lines >= m.height {
+		return view
+	}
+	return view + strings.Repeat("\n", m.height-lines)
 }
 
 func windowTitle(title string, paused bool) string {

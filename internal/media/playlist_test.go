@@ -58,6 +58,14 @@ func TestFilterPlayablePlaylistEntries(t *testing.T) {
 	if err := os.WriteFile(valid, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write valid file: %v", err)
 	}
+	validM4A := filepath.Join(dir, "chapter.m4a")
+	if err := os.WriteFile(validM4A, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write valid m4a file: %v", err)
+	}
+	validM4B := filepath.Join(dir, "book.m4b")
+	if err := os.WriteFile(validM4B, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write valid m4b file: %v", err)
+	}
 	unsupported := filepath.Join(dir, "nope.txt")
 	if err := os.WriteFile(unsupported, []byte("x"), 0o644); err != nil {
 		t.Fatalf("write unsupported file: %v", err)
@@ -69,6 +77,8 @@ func TestFilterPlayablePlaylistEntries(t *testing.T) {
 
 	input := []PlaylistEntry{
 		{Path: valid},
+		{Path: validM4A},
+		{Path: validM4B},
 		{Path: filepath.Join(dir, "missing.mp3")},
 		{Path: unsupported},
 		{Path: subdir},
@@ -78,6 +88,8 @@ func TestFilterPlayablePlaylistEntries(t *testing.T) {
 	got, skipped := FilterPlayablePlaylistEntries(input)
 	want := []PlaylistEntry{
 		{Path: valid, Title: "ok"},
+		{Path: validM4A, Title: "chapter"},
+		{Path: validM4B, Title: "book"},
 		{URL: "https://example.com/track.mp3", Title: "https://example.com/track.mp3"},
 	}
 	if !reflect.DeepEqual(got, want) {

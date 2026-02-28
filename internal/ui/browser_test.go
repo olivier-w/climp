@@ -93,6 +93,31 @@ func TestStandaloneBrowserSelectionStoresResult(t *testing.T) {
 	}
 }
 
+func TestBrowserShowsAACFamilyFiles(t *testing.T) {
+	restore := chdirTemp(t, map[string]string{
+		"track.m4a": "data",
+		"book.m4b":  "data",
+		"clip.aac":  "data",
+	})
+	defer restore()
+
+	m := NewEmbeddedBrowser()
+
+	for _, name := range []string{"book.m4b", "clip.aac", "track.m4a"} {
+		found := false
+		for _, item := range m.list.Items() {
+			file, ok := item.(fileItem)
+			if ok && file.name+file.ext == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected browser to include %s", name)
+		}
+	}
+}
+
 func chdirTemp(t *testing.T, files map[string]string) func() {
 	t.Helper()
 

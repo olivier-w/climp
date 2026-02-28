@@ -12,6 +12,10 @@ type tickMsg time.Time
 type playbackEndedMsg struct {
 	player *player.Player
 }
+type liveTitleUpdatedMsg struct {
+	player *player.Player
+	title  string
+}
 type fileSavedMsg struct {
 	destName string
 	err      error

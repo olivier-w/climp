@@ -6,7 +6,7 @@ This file gives coding agents fast context for working in this repository.
 
 `climp` is a standalone CLI media player written in Go with a Bubble Tea TUI.
 
-- Local playback: MP3, WAV, FLAC, OGG
+- Local playback: MP3, WAV, FLAC, OGG, AAC, M4A, M4B
 - URL playback:
   - finite downloads via `yt-dlp`
   - live streams via `ffmpeg` for probe-routed live URLs (HLS, ICY/Icecast, many `.mp3`/`.ogg`, and some no-extension endpoints)
@@ -35,6 +35,7 @@ If Go is missing from PATH on Windows, use:
 
 - `internal/player/`: audio engine and decoder pipeline
   - decoders normalize to 16-bit LE PCM
+  - local `.aac`/`.m4a`/`.m4b` playback is ffmpeg -> temp WAV -> existing local decoder path (`player.New`)
   - live stream path: ffmpeg subprocess -> PCM pipe (`player.NewStream`)
   - pipeline: decoder -> countingReader -> speedReader -> Oto
   - `countingReader` also feeds visualizer ring buffer
@@ -85,6 +86,7 @@ Notes:
 
 - `yt-dlp`: URL playback and playlist extraction
 - `ffmpeg`:
+  - local `.aac` / `.m4a` / `.m4b` playback via temp WAV transcode
   - live URL playback decode path (`ffmpeg -> s16le PCM pipe`)
   - save downloaded URL tracks to MP3 (`s` key)
 

@@ -51,6 +51,7 @@ type Model struct {
 	saveMsg     string    // transient status message
 	saveMsgTime time.Time // when saveMsg was set
 	saving      bool      // conversion in progress
+	cleanup     func()    // optional cleanup for single-track temp files
 
 	visualizers []visualizer.Visualizer
 	vizIndex    int
@@ -427,7 +428,7 @@ func (m *Model) flushCaches() {
 // New creates a new Model. sourcePath is the temp file path for URL downloads
 // (pass "" for local files to disable saving). originalURL is the URL passed on
 // the command line (used for deferred playlist extraction; pass "" for local files).
-func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string) Model {
+func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string, cleanup func()) Model {
 	keys := newKeyMap()
 	canSeek := p != nil && p.CanSeek()
 	keys.updateEnabled(sourcePath != "", false, canSeek)
@@ -446,6 +447,7 @@ func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string)
 		volume:           p.Volume(),
 		sourcePath:       sourcePath,
 		sourceTitle:      meta.Title,
+		cleanup:          cleanup,
 		visualizers:      visualizer.Modes(),
 		downloading:      -1,
 		transitionTarget: -1,
@@ -461,7 +463,7 @@ func New(p *player.Player, meta player.Metadata, sourcePath, originalURL string)
 
 // NewWithQueue creates a Model with playlist queue support.
 func NewWithQueue(p *player.Player, meta player.Metadata, sourcePath string, q *queue.Queue, playlistName string) Model {
-	m := New(p, meta, sourcePath, "")
+	m := New(p, meta, sourcePath, "", nil)
 	m.queue = q
 	m.playlistName = normalizePlaylistLabel(playlistName)
 	m.queueList = newQueueList(50)
@@ -493,6 +495,21 @@ func checkDone(p *player.Player) tea.Cmd {
 	}
 }
 
+func (m *Model) shutdown() tea.Cmd {
+	if m.player != nil {
+		m.player.Close()
+		m.player = nil
+	}
+	if m.cleanup != nil {
+		m.cleanup()
+		m.cleanup = nil
+	}
+	if m.queue != nil {
+		m.queue.CleanupAll()
+	}
+	return tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m, cmd := m.handleMsg(msg)
 	m.flushCaches()
@@ -512,10 +529,7 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if isQuit(msg) {
 			m.quitting = true
-			if m.player != nil {
-				m.player.Close()
-			}
-			return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
+			return m, m.shutdown()
 		}
 		if m.player == nil {
 			return m, nil
@@ -691,10 +705,7 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		m.elapsed = m.duration
 		m.quitting = true
-		if m.player != nil {
-			m.player.Close()
-		}
-		return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
+		return m, m.shutdown()
 
 	case trackFailedMsg:
 		if m.queue != nil {
@@ -955,10 +966,7 @@ func (m Model) handleQueuePlaybackEnd() (Model, tea.Cmd) {
 
 	m.elapsed = m.duration
 	m.quitting = true
-	if m.player != nil {
-		m.player.Close()
-	}
-	return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
+	return m, m.shutdown()
 }
 
 // handleTrackDownloaded processes a completed background download.
@@ -981,7 +989,7 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 			}
 			// No playable track found — quit
 			m.quitting = true
-			return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
+			return m, m.shutdown()
 		}
 		m.invalidate(dirtyQueue)
 		return m, m.startNextDownload()
@@ -1117,7 +1125,7 @@ func (m Model) advanceToTrack(track *queue.Track) (Model, tea.Cmd) {
 			return m, func() tea.Msg { return trackFailedMsg{} }
 		}
 		m.quitting = true
-		return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
+		return m, m.shutdown()
 	}
 
 	m.elapsed = 0

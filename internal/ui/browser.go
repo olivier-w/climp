@@ -19,6 +19,12 @@ type BrowserResult struct {
 	Cancelled bool
 }
 
+type BrowserSelectedMsg struct {
+	Path string
+}
+
+type BrowserCancelledMsg struct{}
+
 type fileItem struct {
 	name string
 	ext  string
@@ -36,18 +42,29 @@ func (i urlItem) FilterValue() string { return "url" }
 
 // BrowserModel is the Bubbletea model for the file browser screen.
 type BrowserModel struct {
-	list    list.Model
-	input   textinput.Model
-	urlMode bool
-	result  *BrowserResult
-	err     error
+	list     list.Model
+	input    textinput.Model
+	urlMode  bool
+	result   *BrowserResult
+	err      error
+	embedded bool
 }
 
 // NewBrowser creates a new file browser model scanning the current directory.
 func NewBrowser() BrowserModel {
+	return newBrowser(false)
+}
+
+// NewEmbeddedBrowser creates a browser that emits selection/cancel messages
+// instead of quitting the parent Bubble Tea program.
+func NewEmbeddedBrowser() BrowserModel {
+	return newBrowser(true)
+}
+
+func newBrowser(embedded bool) BrowserModel {
 	entries, err := os.ReadDir(".")
 	if err != nil {
-		return BrowserModel{err: fmt.Errorf("cannot read directory: %w", err)}
+		return BrowserModel{err: fmt.Errorf("cannot read directory: %w", err), embedded: embedded}
 	}
 
 	items := []list.Item{urlItem{}}
@@ -56,14 +73,11 @@ func NewBrowser() BrowserModel {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(e.Name()))
-		switch ext {
-		default:
-			if !media.IsSupportedExt(ext) && !media.IsPlaylistExt(ext) {
-				continue
-			}
-			name := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
-			items = append(items, fileItem{name: name, ext: ext})
+		if !media.IsSupportedExt(ext) && !media.IsPlaylistExt(ext) {
+			continue
 		}
+		name := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+		items = append(items, fileItem{name: name, ext: ext})
 	}
 
 	delegate := list.NewDefaultDelegate()
@@ -85,7 +99,7 @@ func NewBrowser() BrowserModel {
 	ti.CharLimit = 2048
 	ti.Width = 60
 
-	return BrowserModel{list: l, input: ti}
+	return BrowserModel{list: l, input: ti, embedded: embedded}
 }
 
 // HasError returns true if the browser could not be initialized.
@@ -117,7 +131,7 @@ func (m BrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// Don't intercept keys when filtering
+		// Don't intercept keys when filtering.
 		if m.list.FilterState() == list.Filtering {
 			break
 		}
@@ -128,14 +142,20 @@ func (m BrowserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case urlItem:
 				m.urlMode = true
 				m.input.Focus()
-				return m, tea.Batch(textinput.Blink, tea.SetWindowTitle("climp — enter URL"))
+				return m, tea.Batch(textinput.Blink, tea.SetWindowTitle("climp - enter URL"))
 			case fileItem:
 				item := m.list.SelectedItem().(fileItem)
 				path := item.name + item.ext
+				if m.embedded {
+					return m, func() tea.Msg { return BrowserSelectedMsg{Path: path} }
+				}
 				m.result = &BrowserResult{Path: path}
 				return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 			}
 		case "q", "esc", "ctrl+c":
+			if m.embedded {
+				return m, func() tea.Msg { return BrowserCancelledMsg{} }
+			}
 			m.result = &BrowserResult{Cancelled: true}
 			return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 		}
@@ -158,6 +178,9 @@ func (m BrowserModel) updateURLInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			url := strings.TrimSpace(m.input.Value())
 			if url != "" {
+				if m.embedded {
+					return m, func() tea.Msg { return BrowserSelectedMsg{Path: url} }
+				}
 				m.result = &BrowserResult{Path: url}
 				return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 			}
@@ -167,6 +190,9 @@ func (m BrowserModel) updateURLInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Blur()
 			return m, tea.SetWindowTitle("climp")
 		case "ctrl+c":
+			if m.embedded {
+				return m, func() tea.Msg { return BrowserCancelledMsg{} }
+			}
 			m.result = &BrowserResult{Cancelled: true}
 			return m, tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
 		}

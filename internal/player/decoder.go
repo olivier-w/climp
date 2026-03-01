@@ -87,6 +87,24 @@ func (b *baseDecoder) bufferOutput(p, raw []byte) int {
 
 // newDecoder detects format by file extension and returns the appropriate decoder.
 func newDecoder(f *os.File) (audioDecoder, error) {
+	dec, err := newNativeDecoder(f)
+	if err != nil {
+		return nil, err
+	}
+
+	norm, err := newNormalizedDecoder(dec)
+	if err != nil {
+		if c, ok := dec.(io.Closer); ok {
+			_ = c.Close()
+		}
+		return nil, err
+	}
+	return norm, nil
+}
+
+// newNativeDecoder detects format by file extension and returns a decoder that
+// emits 16-bit PCM in the source's native sample rate and channel layout.
+func newNativeDecoder(f *os.File) (audioDecoder, error) {
 	ext := strings.ToLower(filepath.Ext(f.Name()))
 	switch ext {
 	case ".mp3":
@@ -97,6 +115,8 @@ func newDecoder(f *os.File) (audioDecoder, error) {
 		return newFLACDecoder(f)
 	case ".ogg":
 		return newOGGDecoder(f)
+	case ".aac", ".m4a", ".m4b":
+		return newAACDecoder(f)
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", ext)
 	}

@@ -125,41 +125,21 @@ func friendlyAudioInitError(err error) error {
 
 // New creates a new Player for the given audio file path.
 func New(path string) (*Player, error) {
-	openPath := path
-	var cleanup func()
-	if needsLocalFFmpegTranscode(path) {
-		var err error
-		openPath, cleanup, err = transcodeToTempWAV(path)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	f, err := os.Open(openPath)
+	f, err := os.Open(path)
 	if err != nil {
-		if cleanup != nil {
-			cleanup()
-		}
 		return nil, err
 	}
 
 	dec, err := newDecoder(f)
 	if err != nil {
 		f.Close()
-		if cleanup != nil {
-			cleanup()
-		}
 		return nil, err
 	}
 
 	p, err := newFromDecoder(f, dec, true)
 	if err != nil {
-		if cleanup != nil {
-			cleanup()
-		}
 		return nil, err
 	}
-	p.cleanup = cleanup
 	return p, nil
 }
 
@@ -191,7 +171,7 @@ func newFromDecoder(file *os.File, dec audioDecoder, canSeek bool) (*Player, err
 		dur = time.Duration(float64(totalBytes) / float64(bytesPerSec) * float64(time.Second))
 	}
 
-	// ~90ms at 44100Hz stereo 16-bit = 44100 * 2 * 2 * 0.09 ≈ 16KB
+	// ~90ms at 48kHz stereo 16-bit = 48000 * 2 * 2 * 0.09 ~= 17KB
 	sampleBuf := visualizer.NewRingBuffer(16384)
 	cr := &countingReader{reader: dec, sampleBuf: sampleBuf}
 	frameSize := dec.ChannelCount() * 2

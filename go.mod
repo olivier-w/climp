@@ -3,6 +3,7 @@ module github.com/olivier-w/climp
 go 1.25.6
 
 require (
+	github.com/Eyevinn/mp4ff v0.51.0
 	github.com/bogem/id3v2/v2 v2.1.4
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -13,6 +14,7 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/mewkiz/flac v1.0.13
+	github.com/skrashevich/go-aac v0.1.0
 )
 
 require (

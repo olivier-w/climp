@@ -3,7 +3,6 @@ module github.com/olivier-w/climp
 go 1.25.6
 
 require (
-	github.com/Eyevinn/mp4ff v0.51.0
 	github.com/bogem/id3v2/v2 v2.1.4
 	github.com/charmbracelet/bubbles v0.21.0
 	github.com/charmbracelet/bubbletea v1.3.10
@@ -14,10 +13,12 @@ require (
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/mewkiz/flac v1.0.13
-	github.com/skrashevich/go-aac v0.1.0
+	github.com/olivier-w/climp-aac-decoder v0.0.0
 )
 
 require (
+	github.com/Comcast/gaad v1.0.0 // indirect
+	github.com/Eyevinn/mp4ff v0.51.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/charmbracelet/colorprofile v0.2.3-0.20250311203215-f60798e515dc // indirect
@@ -45,3 +46,5 @@ require (
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/text v0.3.8 // indirect
 )
+
+replace github.com/olivier-w/climp-aac-decoder => ./climp-aac-decoder

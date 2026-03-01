@@ -12,14 +12,32 @@ type channelState struct {
 	prevWindowShape uint8
 }
 
+type channelScratch struct {
+	quantized    []int
+	spec         []float64
+	reorder      []float64
+	pcm          []float64
+	windowed     []float64
+	noise        []float64
+	scaleFactors [][]int
+}
+
 type synthDecoder struct {
 	cfg       ascConfig
 	state     []channelState
+	scratch   []channelScratch
 	noiseSeed uint32
 	trace     TraceSink
 
 	longIMDCTWork  imdctWork
 	shortIMDCTWork imdctWork
+	monoOut        []float64
+	stereoOut      []float64
+	adtsFrame      []byte
+	tnsCoeffs      []float64
+	tnsPredictor   []float64
+	tnsWork        []float64
+	tnsState       []float64
 }
 
 type icsMeta struct {
@@ -71,28 +89,53 @@ func newSynthDecoder(cfg ascConfig, trace TraceSink) *synthDecoder {
 	initDecodeTables()
 
 	state := make([]channelState, cfg.channelConfig)
+	scratch := make([]channelScratch, cfg.channelConfig)
 	for i := range state {
 		state[i] = channelState{
 			overlap: make([]float64, longWindowLength),
 		}
+		scratch[i] = channelScratch{
+			quantized: make([]int, aacFrameSize),
+			spec:      make([]float64, aacFrameSize),
+			reorder:   make([]float64, aacFrameSize),
+			pcm:       make([]float64, longWindowLength),
+			windowed:  make([]float64, longBlockLength),
+		}
 	}
-	return &synthDecoder{
+	d := &synthDecoder{
 		cfg:            cfg,
 		state:          state,
+		scratch:        scratch,
 		noiseSeed:      1,
 		trace:          trace,
 		longIMDCTWork:  newIMDCTWork(longWindowLength),
 		shortIMDCTWork: newIMDCTWork(shortWindowLength),
+	}
+	if cfg.channelConfig == 1 {
+		d.monoOut = make([]float64, longWindowLength)
+	} else {
+		d.stereoOut = make([]float64, longWindowLength*2)
+	}
+	return d
+}
+
+func (d *synthDecoder) reset(trace TraceSink) {
+	d.trace = trace
+	d.noiseSeed = 1
+	for i := range d.state {
+		clear(d.state[i].overlap)
+		d.state[i].prevWindowShape = 0
 	}
 }
 
 func (d *synthDecoder) decodeAccessUnit(src *containerSource, payload []byte, unitIndex, rawStart, pcmFrames int) ([]float64, error) {
 	frame := payload
 	if src.container != ".aac" {
-		frame = makeADTSFrame(src.asc, payload)
+		frame = appendADTSFrame(d.adtsFrame, src.cfg, payload)
 		if frame == nil {
 			return nil, fmt.Errorf("building synthetic ADTS frame")
 		}
+		d.adtsFrame = frame
 	}
 
 	adts, err := gaad.ParseADTS(frame)
@@ -128,7 +171,7 @@ func (d *synthDecoder) decodeAccessUnit(src *containerSource, payload []byte, un
 
 func (d *synthDecoder) decodeSCE(sce any) ([]float64, FrameTrace, error) {
 	stream := fieldAny(sce, "Channel_stream")
-	decoded, err := d.buildICSDecoded(stream)
+	decoded, err := d.buildICSDecoded(0, stream)
 	if err != nil {
 		return nil, FrameTrace{}, err
 	}
@@ -150,20 +193,19 @@ func (d *synthDecoder) decodeSCE(sce any) ([]float64, FrameTrace, error) {
 	trace.IMDCTPeak = stats.imdctPeak
 	trace.OverlapPeak = stats.overlapPeak
 	trace.PCMPeak = stats.pcmPeak
-	out := make([]float64, len(pcm))
-	copy(out, pcm)
-	return out, trace, nil
+	copy(d.monoOut, pcm)
+	return d.monoOut, trace, nil
 }
 
 func (d *synthDecoder) decodeCPE(cpe any) ([]float64, FrameTrace, error) {
 	leftStream := fieldAny(cpe, "Channel_stream1")
 	rightStream := fieldAny(cpe, "Channel_stream2")
 
-	left, err := d.buildICSDecoded(leftStream)
+	left, err := d.buildICSDecoded(0, leftStream)
 	if err != nil {
 		return nil, FrameTrace{}, err
 	}
-	right, err := d.buildICSDecoded(rightStream)
+	right, err := d.buildICSDecoded(1, rightStream)
 	if err != nil {
 		return nil, FrameTrace{}, err
 	}
@@ -196,7 +238,7 @@ func (d *synthDecoder) decodeCPE(cpe any) ([]float64, FrameTrace, error) {
 	trace.OverlapPeak = maxFloat64(leftStats.overlapPeak, rightStats.overlapPeak)
 	trace.PCMPeak = maxFloat64(leftStats.pcmPeak, rightStats.pcmPeak)
 
-	out := make([]float64, len(leftPCM)*2)
+	out := d.stereoOut[:len(leftPCM)*2]
 	for i := range leftPCM {
 		out[i*2] = leftPCM[i]
 		out[i*2+1] = rightPCM[i]
@@ -204,7 +246,7 @@ func (d *synthDecoder) decodeCPE(cpe any) ([]float64, FrameTrace, error) {
 	return out, trace, nil
 }
 
-func (d *synthDecoder) buildICSDecoded(stream any) (*icsDecoded, error) {
+func (d *synthDecoder) buildICSDecoded(channel int, stream any) (*icsDecoded, error) {
 	info := fieldAny(stream, "Ics_info")
 	if info == nil {
 		return nil, malformedf("missing ICS info")
@@ -215,20 +257,20 @@ func (d *synthDecoder) buildICSDecoded(stream any) (*icsDecoded, error) {
 		return nil, malformedf("building ICS metadata")
 	}
 
-	quantized, err := rebuildQuantizedSpectral(stream, meta)
+	quantized, err := d.rebuildQuantizedSpectral(channel, stream, meta)
 	if err != nil {
 		return nil, err
 	}
 
-	scaleFactors := decodeScaleFactors(stream, meta)
+	scaleFactors := d.decodeScaleFactors(channel, stream, meta)
 	globalGain := int(uint8Field(stream, "Global_gain"))
 	if boolField(stream, "Pulse_data_present") {
 		applyPulseData(quantized, meta, fieldAny(stream, "Pulse_data"))
 	}
-	spec := inverseQuantize(quantized)
+	spec := d.inverseQuantize(channel, quantized)
 	applyScaleFactors(spec, meta, scaleFactors)
 	if meta.windowSequence == windowEightShort {
-		spec = reorderShortSpectral(spec, meta)
+		spec = d.reorderShortSpectral(channel, spec, meta)
 	}
 
 	return &icsDecoded{
@@ -261,7 +303,7 @@ func readICSMeta(info any) *icsMeta {
 	}
 }
 
-func decodeScaleFactors(stream any, meta *icsMeta) [][]int {
+func (d *synthDecoder) decodeScaleFactors(channel int, stream any, meta *icsMeta) [][]int {
 	scaleData := fieldAny(stream, "Scale_factor_data")
 	globalGain := int(uint8Field(stream, "Global_gain"))
 	scaleFactor := globalGain
@@ -269,29 +311,43 @@ func decodeScaleFactors(stream any, meta *icsMeta) [][]int {
 	intensityPosition := 0
 	noisePCM := true
 
-	dcpmSF := uint8Matrix(fieldValue(scaleData, "Dcpm_sf"))
-	dcpmNoise := uint16Matrix(fieldValue(scaleData, "Dcpm_noise_nrg"))
-	dcpmIntensity := uint8Matrix(fieldValue(scaleData, "Dcpm_is_position"))
+	dcpmSF := fieldValue(scaleData, "Dcpm_sf")
+	dcpmNoise := fieldValue(scaleData, "Dcpm_noise_nrg")
+	dcpmIntensity := fieldValue(scaleData, "Dcpm_is_position")
+	if !dcpmSF.IsValid() || !dcpmNoise.IsValid() || !dcpmIntensity.IsValid() {
+		return nil
+	}
 
-	out := make([][]int, meta.numWindowGroups)
+	scratch := &d.scratch[channel]
+	if cap(scratch.scaleFactors) < meta.numWindowGroups {
+		scratch.scaleFactors = make([][]int, meta.numWindowGroups)
+	}
+	out := scratch.scaleFactors[:meta.numWindowGroups]
 	for g := 0; g < meta.numWindowGroups; g++ {
-		out[g] = make([]int, meta.maxSFB)
+		if cap(out[g]) < meta.maxSFB {
+			out[g] = make([]int, meta.maxSFB)
+		}
+		out[g] = out[g][:meta.maxSFB]
+		clear(out[g])
+		sfRow := exposeValue(dcpmSF.Index(g))
+		noiseRow := exposeValue(dcpmNoise.Index(g))
+		intensityRow := exposeValue(dcpmIntensity.Index(g))
 		for sfb := 0; sfb < meta.maxSFB; sfb++ {
 			switch meta.sfbCB[g][sfb] {
 			case gaad.ZERO_HCB:
 			case gaad.INTENSITY_HCB, gaad.INTENSITY_HCB2:
-				intensityPosition += int(dcpmIntensity[g][sfb]) - 60
+				intensityPosition += numericValue(exposeValue(intensityRow.Index(sfb))) - 60
 				out[g][sfb] = intensityPosition
 			case gaad.NOISE_HCB:
 				if noisePCM {
 					noisePCM = false
-					noiseEnergy += dcpmNoise[g][sfb] - 256
+					noiseEnergy += numericValue(exposeValue(noiseRow.Index(sfb))) - 256
 				} else {
-					noiseEnergy += dcpmNoise[g][sfb] - 60
+					noiseEnergy += numericValue(exposeValue(noiseRow.Index(sfb))) - 60
 				}
 				out[g][sfb] = noiseEnergy
 			default:
-				scaleFactor += int(dcpmSF[g][sfb]) - 60
+				scaleFactor += numericValue(exposeValue(sfRow.Index(sfb))) - 60
 				out[g][sfb] = scaleFactor
 			}
 		}
@@ -299,11 +355,15 @@ func decodeScaleFactors(stream any, meta *icsMeta) [][]int {
 	return out
 }
 
-func rebuildQuantizedSpectral(stream any, meta *icsMeta) ([]int, error) {
+func (d *synthDecoder) rebuildQuantizedSpectral(channel int, stream any, meta *icsMeta) ([]int, error) {
 	specData := fieldAny(stream, "Spectral_data")
-	hcod := int8Matrix(fieldValue(specData, "Hcod"))
+	hcod := fieldValue(specData, "Hcod")
+	if !hcod.IsValid() {
+		return nil, malformedf("missing spectral data")
+	}
 
-	spec := make([]int, aacFrameSize)
+	spec := d.scratch[channel].quantized[:aacFrameSize]
+	clear(spec)
 	huffIndex := 0
 	windowBase := 0
 	for g := 0; g < meta.numWindowGroups; g++ {
@@ -325,17 +385,17 @@ func rebuildQuantizedSpectral(stream any, meta *icsMeta) ([]int, error) {
 			}
 
 			for k := start; k < end; k += step {
-				if huffIndex >= len(hcod) {
+				if huffIndex >= hcod.Len() {
 					return nil, fmt.Errorf("malformed spectral data")
 				}
-				values := hcod[huffIndex]
+				row := exposeValue(hcod.Index(huffIndex))
 				huffIndex++
-				for i, value := range values {
+				for i := 0; i < row.Len(); i++ {
 					pos := groupBase + k + i
 					if pos >= len(spec) {
 						return nil, malformedf("spectral coefficient overflow")
 					}
-					spec[pos] = value
+					spec[pos] = numericValue(exposeValue(row.Index(i)))
 				}
 			}
 		}
@@ -345,8 +405,8 @@ func rebuildQuantizedSpectral(stream any, meta *icsMeta) ([]int, error) {
 	return spec, nil
 }
 
-func inverseQuantize(quantized []int) []float64 {
-	spec := make([]float64, len(quantized))
+func (d *synthDecoder) inverseQuantize(channel int, quantized []int) []float64 {
+	spec := d.scratch[channel].spec[:len(quantized)]
 	for i, value := range quantized {
 		spec[i] = pow43(value)
 	}
@@ -405,8 +465,9 @@ func applyPulseData(spec []int, meta *icsMeta, pulse any) {
 	}
 }
 
-func reorderShortSpectral(spec []float64, meta *icsMeta) []float64 {
-	out := make([]float64, len(spec))
+func (d *synthDecoder) reorderShortSpectral(channel int, spec []float64, meta *icsMeta) []float64 {
+	out := d.scratch[channel].reorder[:len(spec)]
+	clear(out)
 	windowBase := 0
 	for g := 0; g < meta.numWindowGroups; g++ {
 		groupLen := meta.windowGroupLength[g]
@@ -431,6 +492,29 @@ func reorderShortSpectral(spec []float64, meta *icsMeta) []float64 {
 	return out
 }
 
+func reorderShortSpectral(spec []float64, meta *icsMeta) []float64 {
+	out := make([]float64, len(spec))
+	windowBase := 0
+	for g := 0; g < meta.numWindowGroups; g++ {
+		groupLen := meta.windowGroupLength[g]
+		groupBase := windowBase * shortWindowLength
+		srcOffset := 0
+		for sfb := 0; sfb < meta.maxSFB; sfb++ {
+			start := meta.swbOffset[sfb]
+			end := meta.swbOffset[sfb+1]
+			width := end - start
+			for w := 0; w < groupLen; w++ {
+				dst := (windowBase+w)*shortWindowLength + start
+				src := groupBase + srcOffset
+				copy(out[dst:dst+width], spec[src:src+width])
+				srcOffset += width
+			}
+		}
+		windowBase += groupLen
+	}
+	return out
+}
+
 func (d *synthDecoder) applyPNSMono(ch *icsDecoded) {
 	windowBase := 0
 	for g := 0; g < ch.meta.numWindowGroups; g++ {
@@ -440,7 +524,7 @@ func (d *synthDecoder) applyPNSMono(ch *icsDecoded) {
 			}
 			for w := 0; w < ch.meta.windowGroupLength[g]; w++ {
 				start, end := ch.meta.bandRange(windowBase+w, sfb)
-				noise := d.generateNoise(end - start)
+				noise := d.generateNoise(0, end-start)
 				scaleNoise(ch.spec[start:end], noise, ch.scaleFactors[g][sfb])
 			}
 		}
@@ -462,7 +546,7 @@ func (d *synthDecoder) applyPNSPair(left, right *icsDecoded, msUsed [][]bool) {
 			for w := 0; w < left.meta.windowGroupLength[g]; w++ {
 				if leftNoise {
 					start, end := left.meta.bandRange(windowBase+w, sfb)
-					noise := d.generateNoise(end - start)
+					noise := d.generateNoise(0, end-start)
 					scaleNoise(left.spec[start:end], noise, left.scaleFactors[g][sfb])
 					if useSame {
 						rStart, rEnd := right.meta.bandRange(windowBase+w, sfb)
@@ -472,7 +556,7 @@ func (d *synthDecoder) applyPNSPair(left, right *icsDecoded, msUsed [][]bool) {
 				}
 				if rightNoise {
 					rStart, rEnd := right.meta.bandRange(windowBase+w, sfb)
-					noise := d.generateNoise(rEnd - rStart)
+					noise := d.generateNoise(1, rEnd-rStart)
 					scaleNoise(right.spec[rStart:rEnd], noise, right.scaleFactors[g][sfb])
 				}
 			}
@@ -546,8 +630,16 @@ func (d *synthDecoder) applyTNS(ch *icsDecoded) error {
 	return d.applyTNSTools(ch)
 }
 
-func (d *synthDecoder) generateNoise(width int) []float64 {
-	noise := make([]float64, width)
+func (d *synthDecoder) generateNoise(channel, width int) []float64 {
+	if width <= 0 {
+		return nil
+	}
+	noise := d.scratch[channel].noise
+	if cap(noise) < width {
+		noise = make([]float64, width)
+		d.scratch[channel].noise = noise
+	}
+	noise = noise[:width]
 	energy := 0.0
 	for i := range noise {
 		d.noiseSeed = d.noiseSeed*1664525 + 1013904223

@@ -75,9 +75,6 @@ func openWithTrace(src io.ReaderAt, size int64, name string, sink TraceSink) (*R
 			Container:    container,
 		},
 	}
-	if err := r.resetDecoder(); err != nil {
-		return nil, err
-	}
 	r.discard = source.leading * source.cfg.channelConfig * 2
 	return r, nil
 }
@@ -268,11 +265,20 @@ func (r *Reader) resetDecoder() error {
 	if r.source == nil {
 		return io.EOF
 	}
-	r.decoder = newSynthDecoder(r.source.cfg, r.trace)
+	if r.decoder == nil {
+		r.decoder = newSynthDecoder(r.source.cfg, r.trace)
+		return nil
+	}
+	r.decoder.reset(r.trace)
 	return nil
 }
 
 func (r *Reader) decodeAccessUnit() ([]byte, error) {
+	if r.decoder == nil {
+		if err := r.resetDecoder(); err != nil {
+			return nil, err
+		}
+	}
 	for {
 		if r.source == nil || r.nextAU >= len(r.source.units) {
 			return nil, io.EOF

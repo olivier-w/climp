@@ -88,6 +88,8 @@ If a URL contains `&` (common for YouTube playlist or radio links), wrap it in q
 | `?` | toggle expanded help |
 | `q / esc / ctrl+c` | quit |
 
+On seekable local files, repeated left/right keypresses now preview the target position immediately, pause audio while you scrub, and apply one final seek after a brief idle delay.
+
 ## Format support
 
 - audio: `.mp3`, `.wav`, `.flac`, `.ogg`, `.aac`, `.m4a`, `.m4b`

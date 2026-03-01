@@ -675,14 +675,13 @@ func (r *ascBitReader) rejectSyncExtensions() error {
 	return nil
 }
 
-func makeADTSFrame(asc []byte, payload []byte) []byte {
-	cfg, err := parseASC(asc)
-	if err != nil {
-		return nil
-	}
-
+func appendADTSFrame(dst []byte, cfg ascConfig, payload []byte) []byte {
 	frameLength := len(payload) + 7
-	header := []byte{
+	if cap(dst) < frameLength {
+		dst = make([]byte, frameLength)
+	}
+	dst = dst[:frameLength]
+	header := [...]byte{
 		0xFF,
 		0xF1,
 		byte((cfg.objectType-1)<<6 | (cfg.sampleRateIndex&0x0f)<<2 | ((cfg.channelConfig >> 2) & 0x01)),
@@ -691,11 +690,9 @@ func makeADTSFrame(asc []byte, payload []byte) []byte {
 		byte(((frameLength & 0x07) << 5) | 0x1F),
 		0xFC,
 	}
-
-	frame := make([]byte, 0, frameLength)
-	frame = append(frame, header...)
-	frame = append(frame, payload...)
-	return frame
+	copy(dst[:7], header[:])
+	copy(dst[7:], payload)
+	return dst
 }
 
 var sampleRates = [...]int{

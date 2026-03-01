@@ -39,11 +39,11 @@ func (d *synthDecoder) applyTNSTools(ch *icsDecoded) error {
 				continue
 			}
 
-			coeffs, err := ch.tnsData.coefficients(w, filt, order)
+			coeffs, err := d.tnsCoefficients(ch.tnsData, w, filt, order)
 			if err != nil {
 				return err
 			}
-			lpc := reflectionToPredictor(coeffs)
+			lpc := d.reflectionToPredictor(coeffs)
 			startBand := minInt3(bottomBand, maxTNSBands, ch.meta.maxSFB)
 			endBand := minInt3(topBand, maxTNSBands, ch.meta.maxSFB)
 			if startBand < 0 || endBand < startBand || endBand > swbLimit {
@@ -75,7 +75,7 @@ func (d *synthDecoder) applyTNSTools(ch *icsDecoded) error {
 				index = end - 1
 				step = -1
 			}
-			if err := applyTNSARFilter(ch.spec, index, end-start, step, lpc); err != nil {
+			if err := d.applyTNSARFilter(ch.spec, index, end-start, step, lpc); err != nil {
 				return err
 			}
 		}
@@ -127,7 +127,7 @@ func (t *tnsFilterData) filterDirection(window, filt int) bool {
 	return t.direction[window][filt]
 }
 
-func (t *tnsFilterData) coefficients(window, filt, order int) ([]float64, error) {
+func (d *synthDecoder) tnsCoefficients(t *tnsFilterData, window, filt, order int) ([]float64, error) {
 	if t == nil || window < 0 || window >= len(t.coef) || filt < 0 || filt >= len(t.coef[window]) {
 		return nil, malformedf("invalid TNS filter metadata")
 	}
@@ -150,7 +150,10 @@ func (t *tnsFilterData) coefficients(window, filt, order int) ([]float64, error)
 		return nil, malformedf("invalid TNS coefficient count")
 	}
 
-	out := make([]float64, order)
+	if cap(d.tnsCoeffs) < order {
+		d.tnsCoeffs = make([]float64, order)
+	}
+	out := d.tnsCoeffs[:order]
 	steps := 1 << (baseBits - 1)
 	positiveScale := (float64(steps) - 0.5) / (math.Pi / 2)
 	negativeScale := (float64(steps) + 0.5) / (math.Pi / 2)
@@ -165,10 +168,19 @@ func (t *tnsFilterData) coefficients(window, filt, order int) ([]float64, error)
 	return out, nil
 }
 
-func reflectionToPredictor(reflection []float64) []float64 {
-	predictor := make([]float64, len(reflection)+1)
+func (d *synthDecoder) reflectionToPredictor(reflection []float64) []float64 {
+	need := len(reflection) + 1
+	if cap(d.tnsPredictor) < need {
+		d.tnsPredictor = make([]float64, need)
+	}
+	predictor := d.tnsPredictor[:need]
+	clear(predictor)
 	predictor[0] = 1
-	work := make([]float64, len(reflection)+1)
+	if cap(d.tnsWork) < need {
+		d.tnsWork = make([]float64, need)
+	}
+	work := d.tnsWork[:need]
+	clear(work)
 	for m := 1; m <= len(reflection); m++ {
 		predictor[m] = reflection[m-1]
 		for i := 1; i < m; i++ {
@@ -181,7 +193,7 @@ func reflectionToPredictor(reflection []float64) []float64 {
 	return predictor[1:]
 }
 
-func applyTNSARFilter(spec []float64, index, size, step int, lpc []float64) error {
+func (d *synthDecoder) applyTNSARFilter(spec []float64, index, size, step int, lpc []float64) error {
 	if step == 0 {
 		return malformedf("invalid TNS filter direction")
 	}
@@ -189,7 +201,11 @@ func applyTNSARFilter(spec []float64, index, size, step int, lpc []float64) erro
 		return nil
 	}
 
-	state := make([]float64, len(lpc))
+	if cap(d.tnsState) < len(lpc) {
+		d.tnsState = make([]float64, len(lpc))
+	}
+	state := d.tnsState[:len(lpc)]
+	clear(state)
 	for i := 0; i < size; i++ {
 		if index < 0 || index >= len(spec) {
 			return malformedf("invalid TNS filter bounds")

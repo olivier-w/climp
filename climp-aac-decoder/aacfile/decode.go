@@ -16,6 +16,7 @@ type synthDecoder struct {
 	cfg       ascConfig
 	state     []channelState
 	noiseSeed uint32
+	trace     TraceSink
 
 	longIMDCTWork  imdctWork
 	shortIMDCTWork imdctWork
@@ -35,11 +36,17 @@ type icsMeta struct {
 
 type icsDecoded struct {
 	meta         *icsMeta
+	globalGain   int
 	scaleFactors [][]int
 	spec         []float64
 	currentShape uint8
+	pulsePresent bool
+	pnsBands     int
+	escBands     int
+	maxQuantized int
 	tnsPresent   bool
-	tnsData      any
+	tnsData      *tnsFilterData
+	tnsFilters   int
 }
 
 type tnsFilterData struct {
@@ -52,7 +59,15 @@ type tnsFilterData struct {
 	coef         [][][]uint8
 }
 
-func newSynthDecoder(cfg ascConfig) *synthDecoder {
+type channelSynthStats struct {
+	specPeakPreTNS  float64
+	specPeakPostTNS float64
+	imdctPeak       float64
+	overlapPeak     float64
+	pcmPeak         float64
+}
+
+func newSynthDecoder(cfg ascConfig, trace TraceSink) *synthDecoder {
 	initDecodeTables()
 
 	state := make([]channelState, cfg.channelConfig)
@@ -65,12 +80,13 @@ func newSynthDecoder(cfg ascConfig) *synthDecoder {
 		cfg:            cfg,
 		state:          state,
 		noiseSeed:      1,
+		trace:          trace,
 		longIMDCTWork:  newIMDCTWork(longWindowLength),
 		shortIMDCTWork: newIMDCTWork(shortWindowLength),
 	}
 }
 
-func (d *synthDecoder) decodeAccessUnit(src *containerSource, payload []byte) ([]float64, error) {
+func (d *synthDecoder) decodeAccessUnit(src *containerSource, payload []byte, unitIndex, rawStart, pcmFrames int) ([]float64, error) {
 	frame := payload
 	if src.container != ".aac" {
 		frame = makeADTSFrame(src.asc, payload)
@@ -81,103 +97,153 @@ func (d *synthDecoder) decodeAccessUnit(src *containerSource, payload []byte) ([
 
 	adts, err := gaad.ParseADTS(frame)
 	if err != nil {
-		return nil, err
+		return nil, malformedf("parsing AAC frame: %v", err)
 	}
 
 	switch {
 	case len(adts.Channel_pair_elements) == 1:
 		if src.cfg.channelConfig != 2 {
-			return nil, fmt.Errorf("unexpected channel pair element for %d-channel stream", src.cfg.channelConfig)
+			return nil, malformedf("unexpected channel pair element for %d-channel stream", src.cfg.channelConfig)
 		}
-		return d.decodeCPE(adts.Channel_pair_elements[0])
+		pcm, trace, err := d.decodeCPE(adts.Channel_pair_elements[0])
+		if err != nil {
+			return nil, err
+		}
+		d.emitTrace(src, unitIndex, rawStart, pcmFrames, trace)
+		return pcm, nil
 	case len(adts.Single_channel_elements) == 1:
 		if src.cfg.channelConfig != 1 {
-			return nil, fmt.Errorf("unexpected single channel element for %d-channel stream", src.cfg.channelConfig)
+			return nil, malformedf("unexpected single channel element for %d-channel stream", src.cfg.channelConfig)
 		}
-		return d.decodeSCE(adts.Single_channel_elements[0])
+		pcm, trace, err := d.decodeSCE(adts.Single_channel_elements[0])
+		if err != nil {
+			return nil, err
+		}
+		d.emitTrace(src, unitIndex, rawStart, pcmFrames, trace)
+		return pcm, nil
 	default:
-		return nil, fmt.Errorf("unsupported AAC element layout")
+		return nil, unsupportedFeature("AAC element layout", "only single-channel and channel-pair elements are supported")
 	}
 }
 
-func (d *synthDecoder) decodeSCE(sce any) ([]float64, error) {
+func (d *synthDecoder) decodeSCE(sce any) ([]float64, FrameTrace, error) {
 	stream := fieldAny(sce, "Channel_stream")
 	decoded, err := d.buildICSDecoded(stream)
 	if err != nil {
-		return nil, err
+		return nil, FrameTrace{}, err
 	}
 
 	d.applyPNSMono(decoded)
-	d.applyTNS(decoded)
-	pcm := d.synthChannel(0, decoded.meta, decoded.spec, decoded.currentShape)
+	trace := baseTrace(decoded.meta)
+	trace.PulsePresent = decoded.pulsePresent
+	trace.PNSBands = decoded.pnsBands
+	trace.ESCBands = decoded.escBands
+	trace.MaxQuantized = decoded.maxQuantized
+	trace.TNSPresent = decoded.tnsPresent
+	trace.TNSFilters = decoded.tnsFilters
+	trace.SpecPeakPreTNS = peakAbs(decoded.spec)
+	if err := d.applyTNS(decoded); err != nil {
+		return nil, FrameTrace{}, err
+	}
+	trace.SpecPeakPostTNS = peakAbs(decoded.spec)
+	pcm, stats := d.synthChannel(0, decoded.meta, decoded.spec, decoded.currentShape)
+	trace.IMDCTPeak = stats.imdctPeak
+	trace.OverlapPeak = stats.overlapPeak
+	trace.PCMPeak = stats.pcmPeak
 	out := make([]float64, len(pcm))
 	copy(out, pcm)
-	return out, nil
+	return out, trace, nil
 }
 
-func (d *synthDecoder) decodeCPE(cpe any) ([]float64, error) {
+func (d *synthDecoder) decodeCPE(cpe any) ([]float64, FrameTrace, error) {
 	leftStream := fieldAny(cpe, "Channel_stream1")
 	rightStream := fieldAny(cpe, "Channel_stream2")
 
 	left, err := d.buildICSDecoded(leftStream)
 	if err != nil {
-		return nil, err
+		return nil, FrameTrace{}, err
 	}
 	right, err := d.buildICSDecoded(rightStream)
 	if err != nil {
-		return nil, err
+		return nil, FrameTrace{}, err
 	}
 
 	msUsed := boolMatrix(fieldValue(cpe, "Ms_used"))
 	d.applyPNSPair(left, right, msUsed)
 	d.applyMS(left, right, msUsed)
 	d.applyIntensity(left, right, msUsed)
-	d.applyTNS(left)
-	d.applyTNS(right)
+	trace := baseTrace(left.meta)
+	trace.PulsePresent = left.pulsePresent || right.pulsePresent
+	trace.PNSBands = left.pnsBands + right.pnsBands
+	trace.IntensityBands = countIntensityBands(right.meta)
+	trace.MSBands = countMSBands(msUsed)
+	trace.ESCBands = left.escBands + right.escBands
+	trace.MaxQuantized = maxInt(left.maxQuantized, right.maxQuantized)
+	trace.TNSPresent = left.tnsPresent || right.tnsPresent
+	trace.TNSFilters = left.tnsFilters + right.tnsFilters
+	trace.SpecPeakPreTNS = maxFloat64(peakAbs(left.spec), peakAbs(right.spec))
+	if err := d.applyTNS(left); err != nil {
+		return nil, FrameTrace{}, err
+	}
+	if err := d.applyTNS(right); err != nil {
+		return nil, FrameTrace{}, err
+	}
+	trace.SpecPeakPostTNS = maxFloat64(peakAbs(left.spec), peakAbs(right.spec))
 
-	leftPCM := d.synthChannel(0, left.meta, left.spec, left.currentShape)
-	rightPCM := d.synthChannel(1, right.meta, right.spec, right.currentShape)
+	leftPCM, leftStats := d.synthChannel(0, left.meta, left.spec, left.currentShape)
+	rightPCM, rightStats := d.synthChannel(1, right.meta, right.spec, right.currentShape)
+	trace.IMDCTPeak = maxFloat64(leftStats.imdctPeak, rightStats.imdctPeak)
+	trace.OverlapPeak = maxFloat64(leftStats.overlapPeak, rightStats.overlapPeak)
+	trace.PCMPeak = maxFloat64(leftStats.pcmPeak, rightStats.pcmPeak)
 
 	out := make([]float64, len(leftPCM)*2)
 	for i := range leftPCM {
 		out[i*2] = leftPCM[i]
 		out[i*2+1] = rightPCM[i]
 	}
-	return out, nil
+	return out, trace, nil
 }
 
 func (d *synthDecoder) buildICSDecoded(stream any) (*icsDecoded, error) {
 	info := fieldAny(stream, "Ics_info")
 	if info == nil {
-		return nil, fmt.Errorf("missing ICS info")
+		return nil, malformedf("missing ICS info")
 	}
 
 	meta := readICSMeta(info)
 	if meta == nil {
-		return nil, fmt.Errorf("building ICS metadata")
+		return nil, malformedf("building ICS metadata")
 	}
 
-	spec, err := rebuildSpectral(stream, meta)
+	quantized, err := rebuildQuantizedSpectral(stream, meta)
 	if err != nil {
 		return nil, err
 	}
 
 	scaleFactors := decodeScaleFactors(stream, meta)
-	applyScaleFactors(spec, meta, scaleFactors)
+	globalGain := int(uint8Field(stream, "Global_gain"))
 	if boolField(stream, "Pulse_data_present") {
-		applyPulseData(spec, meta, fieldAny(stream, "Pulse_data"))
+		applyPulseData(quantized, meta, fieldAny(stream, "Pulse_data"))
 	}
+	spec := inverseQuantize(quantized)
+	applyScaleFactors(spec, meta, scaleFactors)
 	if meta.windowSequence == windowEightShort {
 		spec = reorderShortSpectral(spec, meta)
 	}
 
 	return &icsDecoded{
 		meta:         meta,
+		globalGain:   globalGain,
 		scaleFactors: scaleFactors,
 		spec:         spec,
 		currentShape: meta.windowShape,
+		pulsePresent: boolField(stream, "Pulse_data_present"),
+		pnsBands:     countCodebookBands(meta, gaad.NOISE_HCB),
+		escBands:     countCodebookBands(meta, gaad.ESC_HCB),
+		maxQuantized: maxAbsInt(quantized),
 		tnsPresent:   boolField(stream, "Tns_data_present"),
-		tnsData:      fieldAny(stream, "Tns_data"),
+		tnsData:      readTNSData(fieldAny(stream, "Tns_data")),
+		tnsFilters:   countTNSFilters(fieldAny(stream, "Tns_data")),
 	}, nil
 }
 
@@ -233,11 +299,11 @@ func decodeScaleFactors(stream any, meta *icsMeta) [][]int {
 	return out
 }
 
-func rebuildSpectral(stream any, meta *icsMeta) ([]float64, error) {
+func rebuildQuantizedSpectral(stream any, meta *icsMeta) ([]int, error) {
 	specData := fieldAny(stream, "Spectral_data")
 	hcod := int8Matrix(fieldValue(specData, "Hcod"))
 
-	spec := make([]float64, aacFrameSize)
+	spec := make([]int, aacFrameSize)
 	huffIndex := 0
 	windowBase := 0
 	for g := 0; g < meta.numWindowGroups; g++ {
@@ -267,9 +333,9 @@ func rebuildSpectral(stream any, meta *icsMeta) ([]float64, error) {
 				for i, value := range values {
 					pos := groupBase + k + i
 					if pos >= len(spec) {
-						return nil, fmt.Errorf("spectral coefficient overflow")
+						return nil, malformedf("spectral coefficient overflow")
 					}
-					spec[pos] = pow43(value)
+					spec[pos] = value
 				}
 			}
 		}
@@ -277,6 +343,14 @@ func rebuildSpectral(stream any, meta *icsMeta) ([]float64, error) {
 	}
 
 	return spec, nil
+}
+
+func inverseQuantize(quantized []int) []float64 {
+	spec := make([]float64, len(quantized))
+	for i, value := range quantized {
+		spec[i] = pow43(value)
+	}
+	return spec
 }
 
 func applyScaleFactors(spec []float64, meta *icsMeta, scaleFactors [][]int) {
@@ -292,7 +366,11 @@ func applyScaleFactors(spec []float64, meta *icsMeta, scaleFactors [][]int) {
 				continue
 			}
 
-			scale := math.Pow(2, 0.25*float64(scaleFactors[g][sfb]-100))
+			sf := scaleFactors[g][sfb]
+			scale := 1.0
+			if sf >= 0 && sf <= 255 {
+				scale = math.Pow(2, 0.25*float64(sf-100))
+			}
 			start := groupBase + meta.sectSFBOffset[g][sfb]
 			end := groupBase + meta.sectSFBOffset[g][sfb+1]
 			for i := start; i < end; i++ {
@@ -303,7 +381,7 @@ func applyScaleFactors(spec []float64, meta *icsMeta, scaleFactors [][]int) {
 	}
 }
 
-func applyPulseData(spec []float64, meta *icsMeta, pulse any) {
+func applyPulseData(spec []int, meta *icsMeta, pulse any) {
 	if pulse == nil || meta.windowSequence == windowEightShort {
 		return
 	}
@@ -322,11 +400,10 @@ func applyPulseData(spec []float64, meta *icsMeta, pulse any) {
 		if k < 0 || k >= len(spec) {
 			break
 		}
-		amp := float64(amps[i])
 		if spec[k] < 0 {
-			spec[k] -= amp
+			spec[k] -= int(amps[i])
 		} else {
-			spec[k] += amp
+			spec[k] += int(amps[i])
 		}
 	}
 }
@@ -463,80 +540,8 @@ func (d *synthDecoder) applyIntensity(left, right *icsDecoded, msUsed [][]bool) 
 	}
 }
 
-func (d *synthDecoder) applyTNS(ch *icsDecoded) {
-	if !ch.tnsPresent || ch.tnsData == nil {
-		return
-	}
-
-	tns := readTNSData(ch.tnsData)
-	if tns == nil {
-		return
-	}
-
-	windowCount := ch.meta.numWindows
-	if windowCount <= 0 {
-		windowCount = 1
-	}
-	maxBand := ch.meta.maxSFB
-	if len(ch.meta.swbOffset) > 0 && maxBand > len(ch.meta.swbOffset)-1 {
-		maxBand = len(ch.meta.swbOffset) - 1
-	}
-	for w := 0; w < windowCount && w < len(tns.nFilt); w++ {
-		topBand := maxBand
-		for filt := 0; filt < tns.nFilt[w] && filt < len(tns.length[w]) && filt < len(tns.order[w]); filt++ {
-			order := tns.order[w][filt]
-			if order <= 0 {
-				continue
-			}
-
-			bottomBand := topBand - tns.length[w][filt]
-			if bottomBand < 0 {
-				bottomBand = 0
-			}
-			if bottomBand >= topBand {
-				topBand = bottomBand
-				continue
-			}
-
-			start := ch.meta.swbOffset[bottomBand]
-			end := ch.meta.swbOffset[topBand]
-			if ch.meta.windowSequence == windowEightShort {
-				base := w * shortWindowLength
-				start += base
-				end += base
-			}
-			if start < 0 {
-				start = 0
-			}
-			if end > len(ch.spec) {
-				end = len(ch.spec)
-			}
-			if start >= end {
-				topBand = bottomBand
-				continue
-			}
-
-			coefs := tns.coefficients(w, filt, order)
-			if len(coefs) == 0 {
-				topBand = bottomBand
-				continue
-			}
-			lpc := reflectionToLPC(coefs)
-			if len(lpc) == 0 {
-				topBand = bottomBand
-				continue
-			}
-
-			filtered := ch.spec[start:end]
-			if tns.direction[w][filt] {
-				applyARFilterReverse(filtered, lpc)
-			} else {
-				applyARFilterForward(filtered, lpc)
-			}
-
-			topBand = bottomBand
-		}
-	}
+func (d *synthDecoder) applyTNS(ch *icsDecoded) error {
+	return d.applyTNSTools(ch)
 }
 
 func (d *synthDecoder) generateNoise(width int) []float64 {
@@ -559,7 +564,7 @@ func (d *synthDecoder) generateNoise(width int) []float64 {
 }
 
 func scaleNoise(dst, noise []float64, sf int) {
-	scale := math.Pow(2, 0.25*float64(sf-100))
+	scale := math.Pow(2, 0.25*float64(sf))
 	for i := range dst {
 		dst[i] = noise[i] * scale
 	}
@@ -584,13 +589,133 @@ func (m *icsMeta) bandRange(windowIndex, sfb int) (int, int) {
 }
 
 func floatToPCM16(sample float64) int16 {
-	if sample >= 1 {
+	if sample >= 32767 {
 		return 32767
 	}
-	if sample <= -1 {
+	if sample <= -32768 {
 		return -32768
 	}
-	return int16(sample * 32767)
+	if sample >= 0 {
+		return int16(sample + 0.5)
+	}
+	return int16(sample - 0.5)
+}
+
+func (d *synthDecoder) emitTrace(src *containerSource, unitIndex, rawStart, pcmFrames int, trace FrameTrace) {
+	if d.trace == nil {
+		return
+	}
+
+	visibleStart := rawStart - src.leading
+	if visibleStart < 0 {
+		visibleStart = 0
+	}
+	visibleFrames := pcmFrames
+	if trim := src.leading - rawStart; trim > 0 {
+		if trim >= visibleFrames {
+			visibleFrames = 0
+		} else {
+			visibleFrames -= trim
+		}
+	}
+
+	trace.AUIndex = unitIndex
+	trace.PCMStartFrame = int64(visibleStart)
+	trace.PCMFrames = visibleFrames
+	d.trace.OnFrame(trace)
+}
+
+func baseTrace(meta *icsMeta) FrameTrace {
+	if meta == nil {
+		return FrameTrace{}
+	}
+	return FrameTrace{
+		WindowSequence:  meta.windowSequence,
+		WindowShape:     meta.windowShape,
+		NumWindows:      meta.numWindows,
+		NumWindowGroups: meta.numWindowGroups,
+		MaxSFB:          meta.maxSFB,
+	}
+}
+
+func countCodebookBands(meta *icsMeta, targets ...uint8) int {
+	if meta == nil {
+		return 0
+	}
+	count := 0
+	for g := 0; g < meta.numWindowGroups; g++ {
+		for sfb := 0; sfb < meta.maxSFB; sfb++ {
+			for _, target := range targets {
+				if meta.sfbCB[g][sfb] == target {
+					count++
+					break
+				}
+			}
+		}
+	}
+	return count
+}
+
+func countIntensityBands(meta *icsMeta) int {
+	return countCodebookBands(meta, gaad.INTENSITY_HCB, gaad.INTENSITY_HCB2)
+}
+
+func countMSBands(msUsed [][]bool) int {
+	count := 0
+	for _, row := range msUsed {
+		for _, used := range row {
+			if used {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func countTNSFilters(data any) int {
+	nFilt := intSlice(fieldValue(data, "N_filt"))
+	total := 0
+	for _, n := range nFilt {
+		total += n
+	}
+	return total
+}
+
+func peakAbs(values []float64) float64 {
+	peak := 0.0
+	for _, value := range values {
+		if abs := math.Abs(value); abs > peak {
+			peak = abs
+		}
+	}
+	return peak
+}
+
+func maxFloat64(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxAbsInt(values []int) int {
+	peak := 0
+	for _, value := range values {
+		if value < 0 {
+			value = -value
+		}
+		if value > peak {
+			peak = value
+		}
+	}
+	return peak
 }
 
 func readTNSData(data any) *tnsFilterData {
@@ -634,101 +759,4 @@ func readTNSData(data any) *tnsFilterData {
 		}
 	}
 	return out
-}
-
-func (t *tnsFilterData) coefficients(window, filt, order int) []float64 {
-	if t == nil || window < 0 || window >= len(t.coef) || filt < 0 || filt >= len(t.coef[window]) {
-		return nil
-	}
-	resolution := 3
-	if window < len(t.coefRes) && t.coefRes[window] > 0 {
-		resolution = 4
-	}
-	compress := 0
-	if window < len(t.coefCompress) && filt < len(t.coefCompress[window]) {
-		compress = t.coefCompress[window][filt]
-	}
-	coefBits := resolution - compress
-	if coefBits < 2 {
-		coefBits = 2
-	}
-
-	raw := t.coef[window][filt]
-	if order > len(raw) {
-		order = len(raw)
-	}
-	out := make([]float64, order)
-	for i := 0; i < order; i++ {
-		out[i] = tnsQuantToReflection(raw[i], coefBits)
-	}
-	return out
-}
-
-func tnsQuantToReflection(raw uint8, coefBits int) float64 {
-	mask := (1 << coefBits) - 1
-	value := int(raw) & mask
-	signBit := 1 << (coefBits - 1)
-	if value&signBit != 0 {
-		value -= 1 << coefBits
-	}
-	scale := float64(signBit)
-	if scale == 0 {
-		return 0
-	}
-	reflection := float64(value) / scale
-	if reflection >= 1 {
-		reflection = 0.999
-	}
-	if reflection <= -1 {
-		reflection = -0.999
-	}
-	return reflection
-}
-
-func reflectionToLPC(reflection []float64) []float64 {
-	lpc := make([]float64, 0, len(reflection))
-	for _, rc := range reflection {
-		m := len(lpc)
-		next := make([]float64, m+1)
-		next[m] = rc
-		for i := 0; i < m; i++ {
-			next[i] = lpc[i] + rc*lpc[m-1-i]
-		}
-		lpc = next
-	}
-	return lpc
-}
-
-func applyARFilterForward(spec []float64, lpc []float64) {
-	state := make([]float64, len(lpc))
-	for i := 0; i < len(spec); i++ {
-		y := spec[i]
-		for j := range lpc {
-			y -= lpc[j] * state[j]
-		}
-		for j := len(state) - 1; j > 0; j-- {
-			state[j] = state[j-1]
-		}
-		if len(state) > 0 {
-			state[0] = y
-		}
-		spec[i] = y
-	}
-}
-
-func applyARFilterReverse(spec []float64, lpc []float64) {
-	state := make([]float64, len(lpc))
-	for i := len(spec) - 1; i >= 0; i-- {
-		y := spec[i]
-		for j := range lpc {
-			y -= lpc[j] * state[j]
-		}
-		for j := len(state) - 1; j > 0; j-- {
-			state[j] = state[j-1]
-		}
-		if len(state) > 0 {
-			state[0] = y
-		}
-		spec[i] = y
-	}
 }

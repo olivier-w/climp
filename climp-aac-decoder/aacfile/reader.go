@@ -23,6 +23,7 @@ type Reader struct {
 	source *containerSource
 
 	decoder *synthDecoder
+	trace   TraceSink
 
 	pos    int64
 	length int64
@@ -39,8 +40,18 @@ type Reader struct {
 // Open indexes src and exposes a seekable native-rate PCM16LE stream. name is
 // used only to select and validate the expected AAC-family container.
 func Open(src io.ReaderAt, size int64, name string) (*Reader, error) {
+	return openWithTrace(src, size, name, nil)
+}
+
+// OpenWithTrace indexes src and emits per-access-unit synthesis traces into
+// sink while exposing the normal PCM16LE Reader interface.
+func OpenWithTrace(src io.ReaderAt, size int64, name string, sink TraceSink) (*Reader, error) {
+	return openWithTrace(src, size, name, sink)
+}
+
+func openWithTrace(src io.ReaderAt, size int64, name string, sink TraceSink) (*Reader, error) {
 	if size < 0 {
-		return nil, fmt.Errorf("invalid input size: %d", size)
+		return nil, malformedf("invalid input size: %d", size)
 	}
 
 	container, err := sourceContainer(name)
@@ -55,6 +66,7 @@ func Open(src io.ReaderAt, size int64, name string) (*Reader, error) {
 
 	r := &Reader{
 		source: source,
+		trace:  sink,
 		length: int64(source.totalPCM * source.cfg.channelConfig * 2),
 		info: Info{
 			SampleRate:   source.cfg.sampleRate,
@@ -73,11 +85,17 @@ func Open(src io.ReaderAt, size int64, name string) (*Reader, error) {
 // OpenFile opens a local AAC-family file and decodes it into a seekable PCM
 // reader. The input file handle stays owned by the caller.
 func OpenFile(f *os.File) (*Reader, error) {
+	return OpenFileWithTrace(f, nil)
+}
+
+// OpenFileWithTrace opens a local AAC-family file and forwards synthesis traces
+// into sink while exposing the normal PCM16LE Reader interface.
+func OpenFileWithTrace(f *os.File, sink TraceSink) (*Reader, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat input: %w", err)
 	}
-	return Open(f, info.Size(), f.Name())
+	return openWithTrace(f, info.Size(), f.Name(), sink)
 }
 
 func sourceContainer(name string) (string, error) {
@@ -85,7 +103,7 @@ func sourceContainer(name string) (string, error) {
 	case ".aac", ".m4a", ".m4b":
 		return ext, nil
 	default:
-		return "", fmt.Errorf("unsupported AAC container: %s", ext)
+		return "", unsupportedFeature("container", ext)
 	}
 }
 
@@ -165,7 +183,7 @@ func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekEnd:
 		next = r.length + offset
 	default:
-		return r.pos, fmt.Errorf("invalid seek whence: %d", whence)
+		return r.pos, malformedf("invalid seek whence: %d", whence)
 	}
 
 	if next < 0 {
@@ -179,7 +197,7 @@ func (r *Reader) Seek(offset int64, whence int) (int64, error) {
 	if frameSize > 0 {
 		next -= next % frameSize
 	} else {
-		return r.pos, fmt.Errorf("invalid PCM frame size")
+		return r.pos, malformedf("invalid PCM frame size")
 	}
 
 	targetFrame := int(next / frameSize)
@@ -242,6 +260,7 @@ func (r *Reader) Close() error {
 	r.tmpAU = nil
 	r.tmpRaw = nil
 	r.discard = 0
+	r.trace = nil
 	return nil
 }
 
@@ -249,7 +268,7 @@ func (r *Reader) resetDecoder() error {
 	if r.source == nil {
 		return io.EOF
 	}
-	r.decoder = newSynthDecoder(r.source.cfg)
+	r.decoder = newSynthDecoder(r.source.cfg, r.trace)
 	return nil
 }
 
@@ -269,19 +288,19 @@ func (r *Reader) decodeAccessUnit() ([]byte, error) {
 		}
 		r.tmpAU = au
 
-		samples, err := r.decoder.decodeAccessUnit(r.source, au)
+		samples, err := r.decoder.decodeAccessUnit(r.source, au, unitIndex, unit.rawStart, unit.pcmFrames)
 		if err != nil {
 			return nil, fmt.Errorf("decoding AAC access unit %d: %w", unitIndex, err)
 		}
 
 		expected := aacFrameSize * r.info.ChannelCount
 		if len(samples) != expected {
-			return nil, fmt.Errorf("unexpected decoded sample count: got %d want %d", len(samples), expected)
+			return nil, malformedf("unexpected decoded sample count: got %d want %d", len(samples), expected)
 		}
 
 		frameCount := unit.pcmFrames
 		if frameCount < 0 || frameCount > aacFrameSize {
-			return nil, fmt.Errorf("invalid PCM frame count: %d", frameCount)
+			return nil, malformedf("invalid PCM frame count: %d", frameCount)
 		}
 
 		sampleCount := frameCount * r.info.ChannelCount

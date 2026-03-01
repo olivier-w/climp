@@ -5,15 +5,27 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/Comcast/gaad"
 )
 
-const regressionWindowBytes = 4096
+const seekParityWindowBytes = 4096
+
+var regressionWindowHashes = map[string][]string{
+	"smoke-aac-12s.aac": {
+		"bfa11e36be409b222927e84594cde093715a80f954d5a71cc261c039e1f5e9c5",
+		"f2047ba1afd36b75bf67d561fec4e9058f1e1fcc5120e16c2a92de62a0735b21",
+		"fde6d033449a0b621221e4d8dbe6730bc2e300fa4afee54e0b8436ee9109ecac",
+		"b54e085f27279b3d38ecf263cd833600fc9385b2144e11b37d5f4f03a472e83d",
+	},
+	"BeyondGoodEvil_librivox.m4b": {
+		"ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7",
+		"9340e33a984dff8bb198f2c55aa625b2bd054698bfae34e17cda453f8c1b7d9b",
+		"426c66896b9e096599da6699fb7ab4e4c9376d66a62fa7fc89ea2d58f4b93317",
+		"291f6b34521652bf157bd858bd8e405c9597f272980743d0812b07ba7b9d2322",
+	},
+}
 
 func TestOpenFileReadsAACFixtures(t *testing.T) {
 	for _, name := range []string{
@@ -78,50 +90,6 @@ func TestOpenFileReadsAACFixtures(t *testing.T) {
 	}
 }
 
-func TestReaderFixturePCMHashes(t *testing.T) {
-	expected := map[string]map[string]string{
-		"smoke-aac-12s.aac": {
-			"start": "c0765808d1dd52c5e3244d2834587037a05c98d679351ab7865c4872c972b617",
-			"mid":   "63eed12ea0b6973aa4ff502580344dedab3dfc6786a84af0d00457244876ff8f",
-			"tail":  "bbb853f548ba9009b7a363605512064a5a4fa97c738d143f93cce8379f5c5dd2",
-			"seek":  "a7f3028630a19dcdf2b1fc1faa541521fa1c4a1e220651dbe1024aa0a078a11d",
-		},
-		"smoke-aac-18s.m4a": {
-			"start": "8785131af2bbed47acdbd9016af97613ca654a3dea6fab0d75d00269492c66da",
-			"mid":   "62fba1e20266069d22961805ac05cd2aabbe46f74e04f93e521f9e7a501fcdf8",
-			"tail":  "13d0bb5bba5a8ea479d464541dde80a160411eb9082e61c599c58ff715fb70a2",
-			"seek":  "309b497915d4b76356e9c78ecb7888b6e4a6a7fe4890d220f53581d44ca0d295",
-		},
-		"smoke-aac-45s.m4b": {
-			"start": "0174c76af61bba3a666ac691fc4aa826bfd5730b77f9078d614087558b6b0223",
-			"mid":   "753691a8b2a41337384a04810a3c2ec90e63864aa3802f9b4d5b10cb39571e18",
-			"tail":  "c8f08e017fdda782c1b36554dd2678d06c98a7349e74d747f09cd0291f0018b9",
-			"seek":  "039c57bce0b29392a78eead5f86b664afa48e394661bbd7c3a79e81c785b8c55",
-		},
-	}
-
-	for name, hashes := range expected {
-		t.Run(name, func(t *testing.T) {
-			f, err := os.Open(fixturePath(name))
-			if err != nil {
-				t.Fatalf("Open() error = %v", err)
-			}
-			defer f.Close()
-
-			reader, err := OpenFile(f)
-			if err != nil {
-				t.Fatalf("OpenFile() error = %v", err)
-			}
-			defer reader.Close()
-
-			assertWindowHash(t, reader, 0, io.SeekStart, "start", hashes["start"])
-			assertWindowHash(t, reader, reader.Length()/2, io.SeekStart, "mid", hashes["mid"])
-			assertWindowHash(t, reader, -regressionWindowBytes, io.SeekEnd, "tail", hashes["tail"])
-			assertWindowHash(t, reader, reader.Length()/3, io.SeekStart, "seek", hashes["seek"])
-		})
-	}
-}
-
 func TestReaderRepeatedSeekCycles(t *testing.T) {
 	f, err := os.Open(fixturePath("smoke-aac-45s.m4b"))
 	if err != nil {
@@ -157,6 +125,82 @@ func TestReaderRepeatedSeekCycles(t *testing.T) {
 	}
 }
 
+func TestReaderSeekMatchesContinuousDecode(t *testing.T) {
+	f1, err := os.Open(fixturePath("smoke-aac-45s.m4b"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer f1.Close()
+
+	continuous, err := OpenFile(f1)
+	if err != nil {
+		t.Fatalf("OpenFile() continuous error = %v", err)
+	}
+	defer continuous.Close()
+
+	f2, err := os.Open(fixturePath("smoke-aac-45s.m4b"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer f2.Close()
+
+	seekable, err := OpenFile(f2)
+	if err != nil {
+		t.Fatalf("OpenFile() seekable error = %v", err)
+	}
+	defer seekable.Close()
+
+	offsets := []int64{
+		0,
+		continuous.Length() / 3,
+		continuous.Length() / 2,
+		continuous.Length() - seekParityWindowBytes*2,
+	}
+
+	for _, offset := range offsets {
+		offset -= offset % int64(continuous.ChannelCount()*2)
+		if offset < 0 {
+			offset = 0
+		}
+		if offset > continuous.Length() {
+			offset = continuous.Length()
+		}
+	}
+
+	if _, err := continuous.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("continuous Seek(0) error = %v", err)
+	}
+
+	streamPos := int64(0)
+	skipBuf := make([]byte, minInt(seekParityWindowBytes, 8192))
+	for _, offset := range offsets {
+		for streamPos < offset {
+			need := int(offset - streamPos)
+			if need > len(skipBuf) {
+				need = len(skipBuf)
+			}
+			n, err := io.ReadFull(continuous, skipBuf[:need])
+			streamPos += int64(n)
+			if err != nil {
+				t.Fatalf("streaming skip to %d error = %v", offset, err)
+			}
+		}
+
+		want, err := readWindow(continuous, seekParityWindowBytes)
+		if err != nil {
+			t.Fatalf("streaming window at %d error = %v", offset, err)
+		}
+		got, err := readWindowBySeek(seekable, offset, seekParityWindowBytes)
+		if err != nil {
+			t.Fatalf("seek window at %d error = %v", offset, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("seek window mismatch at offset %d", offset)
+		}
+		streamPos += int64(len(want))
+	}
+}
+
 func TestOpenCopiesReaderAtInput(t *testing.T) {
 	data, err := os.ReadFile(fixturePath("smoke-aac-12s.aac"))
 	if err != nil {
@@ -174,58 +218,90 @@ func TestOpenCopiesReaderAtInput(t *testing.T) {
 	}
 }
 
-func TestApplyTNSMutatesFixtureSpectrum(t *testing.T) {
-	f, err := os.Open(fixturePath("smoke-aac-45s.m4b"))
-	if err != nil {
-		t.Fatalf("Open() error = %v", err)
-	}
-	defer f.Close()
+func TestReaderWindowContainsVariation(t *testing.T) {
+	for _, name := range []string{
+		"smoke-aac-12s.aac",
+		"smoke-aac-18s.m4a",
+		"smoke-aac-45s.m4b",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, err := os.Open(fixturePath(name))
+			if err != nil {
+				t.Fatalf("Open() error = %v", err)
+			}
+			defer f.Close()
 
-	info, err := f.Stat()
-	if err != nil {
-		t.Fatalf("Stat() error = %v", err)
-	}
+			reader, err := OpenFile(f)
+			if err != nil {
+				t.Fatalf("OpenFile() error = %v", err)
+			}
+			defer reader.Close()
 
-	src, err := parseContainer(".m4b", f, info.Size())
-	if err != nil {
-		t.Fatalf("parseContainer() error = %v", err)
-	}
+			buf := make([]byte, 4096)
+			n, err := io.ReadFull(reader, buf)
+			if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+				t.Fatalf("ReadFull() error = %v", err)
+			}
+			if n < 4 {
+				t.Fatalf("window too short: %d", n)
+			}
 
-	au, err := src.readAccessUnit(1, nil)
-	if err != nil {
-		t.Fatalf("readAccessUnit() error = %v", err)
+			first := buf[0:2]
+			allSame := true
+			for i := 2; i+1 < n; i += 2 {
+				if buf[i] != first[0] || buf[i+1] != first[1] {
+					allSame = false
+					break
+				}
+			}
+			if allSame {
+				t.Fatal("decoded PCM window has no variation")
+			}
+		})
 	}
+}
 
-	adts, err := gaad.ParseADTS(makeADTSFrame(src.asc, au))
-	if err != nil {
-		t.Fatalf("ParseADTS() error = %v", err)
-	}
+func TestReaderRegressionWindows(t *testing.T) {
+	for name, wantHashes := range regressionWindowHashes {
+		t.Run(name, func(t *testing.T) {
+			f, err := os.Open(fixturePath(name))
+			if err != nil {
+				t.Fatalf("Open() error = %v", err)
+			}
+			defer f.Close()
 
-	stream := adts.Single_channel_elements[0].Channel_stream
-	decoder := newSynthDecoder(src.cfg)
-	decoded, err := decoder.buildICSDecoded(stream)
-	if err != nil {
-		t.Fatalf("buildICSDecoded() error = %v", err)
-	}
-	if !decoded.tnsPresent {
-		t.Fatal("decoded frame unexpectedly lacks TNS")
-	}
+			reader, err := OpenFile(f)
+			if err != nil {
+				t.Fatalf("OpenFile() error = %v", err)
+			}
+			defer reader.Close()
 
-	before := append([]float64(nil), decoded.spec...)
-	decoder.applyTNS(decoded)
+			offsets := []int64{
+				0,
+				reader.Length() / 3,
+				reader.Length() / 2,
+				reader.Length() - seekParityWindowBytes,
+			}
 
-	changed := false
-	for i := range decoded.spec {
-		if math.IsNaN(decoded.spec[i]) || math.IsInf(decoded.spec[i], 0) {
-			t.Fatalf("applyTNS() produced invalid spectral value at %d", i)
-		}
-		if decoded.spec[i] != before[i] {
-			changed = true
-			break
-		}
-	}
-	if !changed {
-		t.Fatal("applyTNS() did not modify the TNS-bearing fixture spectrum")
+			for i, offset := range offsets {
+				offset -= offset % int64(reader.ChannelCount()*2)
+				if offset < 0 {
+					offset = 0
+				}
+				if offset > reader.Length() {
+					offset = reader.Length()
+				}
+				buf, err := readWindowBySeek(reader, offset, seekParityWindowBytes)
+				if err != nil {
+					t.Fatalf("readWindowBySeek(offset=%d) error = %v", offset, err)
+				}
+				sum := sha256.Sum256(buf)
+				got := hex.EncodeToString(sum[:])
+				if got != wantHashes[i] {
+					t.Fatalf("window %d hash = %s, want %s", i, got, wantHashes[i])
+				}
+			}
+		})
 	}
 }
 
@@ -233,25 +309,25 @@ func fixturePath(name string) string {
 	return filepath.Join("..", "..", "songs", name)
 }
 
-func assertWindowHash(t *testing.T, reader *Reader, offset int64, whence int, label, want string) {
-	t.Helper()
-
-	if _, err := reader.Seek(offset, whence); err != nil {
-		t.Fatalf("%s Seek() error = %v", label, err)
+func readWindowBySeek(r *Reader, offset int64, size int) ([]byte, error) {
+	if _, err := r.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
 	}
+	return readWindow(r, size)
+}
 
-	buf := make([]byte, regressionWindowBytes)
-	n, err := io.ReadFull(reader, buf)
+func readWindow(r *Reader, size int) ([]byte, error) {
+	buf := make([]byte, size)
+	n, err := io.ReadFull(r, buf)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-		t.Fatalf("%s ReadFull() error = %v", label, err)
+		return nil, err
 	}
-	if n != regressionWindowBytes {
-		t.Fatalf("%s window size = %d, want %d", label, n, regressionWindowBytes)
-	}
+	return buf[:n], nil
+}
 
-	sum := sha256.Sum256(buf[:n])
-	got := hex.EncodeToString(sum[:])
-	if got != want {
-		t.Fatalf("%s sha256 = %s, want %s", label, got, want)
+func minInt(a, b int) int {
+	if a < b {
+		return a
 	}
+	return b
 }

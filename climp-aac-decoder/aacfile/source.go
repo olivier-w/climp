@@ -2,6 +2,7 @@ package aacfile
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 
@@ -45,7 +46,7 @@ func parseContainer(container string, reader io.ReaderAt, size int64) (*containe
 	case ".m4a", ".m4b":
 		return parseMP4Container(container, reader, size)
 	default:
-		return nil, fmt.Errorf("unsupported AAC container: %s", container)
+		return nil, unsupportedFeature("container", container)
 	}
 }
 
@@ -55,7 +56,7 @@ func parseADTSContainer(reader io.ReaderAt, size int64) (*containerSource, error
 		return nil, err
 	}
 	if offset >= size {
-		return nil, fmt.Errorf("invalid ADTS input: no frames")
+		return nil, malformedf("invalid ADTS input: no frames")
 	}
 
 	var (
@@ -73,13 +74,13 @@ func parseADTSContainer(reader io.ReaderAt, size int64) (*containerSource, error
 		}
 		header, err := readADTSHeader(headerBuf[:n])
 		if err != nil {
-			return nil, fmt.Errorf("parsing ADTS header at byte %d: %w", offset, err)
+			return nil, malformedf("parsing ADTS header at byte %d: %v", offset, err)
 		}
 		if header.frameLength <= 0 || offset+int64(header.frameLength) > size {
-			return nil, fmt.Errorf("truncated ADTS frame at byte %d", offset)
+			return nil, malformedf("truncated ADTS frame at byte %d", offset)
 		}
 		if header.rawDataBlocks != 1 {
-			return nil, fmt.Errorf("unsupported ADTS frame count: %d", header.rawDataBlocks)
+			return nil, unsupportedFeature("ADTS raw data blocks", fmt.Sprintf("%d", header.rawDataBlocks))
 		}
 
 		frameASC := makeASC(header.profile, header.sampleRateIndex, header.channelConfig)
@@ -90,7 +91,7 @@ func parseADTSContainer(reader io.ReaderAt, size int64) (*containerSource, error
 				return nil, err
 			}
 		} else if !bytes.Equal(asc, frameASC) {
-			return nil, fmt.Errorf("unsupported ADTS config change at byte %d", offset)
+			return nil, unsupportedFeature("ADTS config change", fmt.Sprintf("byte %d", offset))
 		}
 
 		units = append(units, accessUnit{
@@ -104,7 +105,7 @@ func parseADTSContainer(reader io.ReaderAt, size int64) (*containerSource, error
 	}
 
 	if len(units) == 0 {
-		return nil, fmt.Errorf("no ADTS frames found")
+		return nil, malformedf("no ADTS frames found")
 	}
 
 	return &containerSource{
@@ -121,13 +122,13 @@ func parseADTSContainer(reader io.ReaderAt, size int64) (*containerSource, error
 func parseMP4Container(container string, reader io.ReaderAt, size int64) (*containerSource, error) {
 	file, err := mp4.DecodeFile(io.NewSectionReader(reader, 0, size), mp4.WithDecodeMode(mp4.DecModeLazyMdat))
 	if err != nil {
-		return nil, fmt.Errorf("decoding MP4: %w", err)
+		return nil, malformedf("decoding MP4: %v", err)
 	}
 	if file.IsFragmented() {
-		return nil, fmt.Errorf("unsupported MP4 AAC track: fragmented")
+		return nil, unsupportedFeature("fragmented MP4", "")
 	}
 	if file.Moov == nil {
-		return nil, fmt.Errorf("invalid MP4: missing moov box")
+		return nil, malformedf("invalid MP4: missing moov box")
 	}
 
 	var audioTracks []*mp4.TrakBox
@@ -137,33 +138,33 @@ func parseMP4Container(container string, reader io.ReaderAt, size int64) (*conta
 		}
 	}
 	if len(audioTracks) != 1 {
-		return nil, fmt.Errorf("unsupported MP4 AAC track layout: expected exactly one audio track, found %d", len(audioTracks))
+		return nil, unsupportedFeature("MP4 audio track layout", fmt.Sprintf("expected exactly one audio track, found %d", len(audioTracks)))
 	}
 
 	trak := audioTracks[0]
 	if trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil || trak.Mdia.Minf.Stbl.Stsd == nil {
-		return nil, fmt.Errorf("invalid MP4 AAC track: incomplete sample table")
+		return nil, malformedf("invalid MP4 AAC track: incomplete sample table")
 	}
 
 	stsd := trak.Mdia.Minf.Stbl.Stsd
 	if len(stsd.Children) != 1 {
-		return nil, fmt.Errorf("unsupported MP4 AAC track: multiple sample descriptions")
+		return nil, unsupportedFeature("MP4 sample descriptions", "multiple sample descriptions")
 	}
 	if stsd.Enca != nil {
-		return nil, fmt.Errorf("unsupported MP4 AAC track: encrypted")
+		return nil, unsupportedFeature("encrypted MP4", "")
 	}
 	sampleEntry := stsd.Mp4a
 	if sampleEntry == nil {
-		return nil, fmt.Errorf("unsupported MP4 audio sample entry: %s", stsd.Children[0].Type())
+		return nil, unsupportedFeature("MP4 audio sample entry", stsd.Children[0].Type())
 	}
 	if sampleEntry.Sinf != nil {
-		return nil, fmt.Errorf("unsupported MP4 AAC track: encrypted")
+		return nil, unsupportedFeature("encrypted MP4", "")
 	}
 	if sampleEntry.Esds == nil ||
 		sampleEntry.Esds.DecConfigDescriptor == nil ||
 		sampleEntry.Esds.DecConfigDescriptor.DecSpecificInfo == nil ||
 		len(sampleEntry.Esds.DecConfigDescriptor.DecSpecificInfo.DecConfig) == 0 {
-		return nil, fmt.Errorf("invalid MP4 AAC track: missing AudioSpecificConfig")
+		return nil, malformedf("invalid MP4 AAC track: missing AudioSpecificConfig")
 	}
 
 	asc := append([]byte(nil), sampleEntry.Esds.DecConfigDescriptor.DecSpecificInfo.DecConfig...)
@@ -172,52 +173,22 @@ func parseMP4Container(container string, reader io.ReaderAt, size int64) (*conta
 		return nil, err
 	}
 
-	sampleDurations, err := expandSTTS(trak)
-	if err != nil {
-		return nil, err
-	}
-	if len(sampleDurations) != int(trak.GetNrSamples()) {
-		return nil, fmt.Errorf("invalid MP4 AAC track: sample table mismatch")
-	}
-
 	leading, err := mp4LeadingTrim(trak)
 	if err != nil {
 		return nil, err
 	}
 
-	totalPCM := 0
-	rawAt := 0
-	units := make([]accessUnit, 0, trak.GetNrSamples())
-	for idx, pcmFrames := range sampleDurations {
-		sampleNr := uint32(idx) + 1
-		ranges, err := trak.GetRangesForSampleInterval(sampleNr, sampleNr)
-		if err != nil {
-			return nil, fmt.Errorf("locating MP4 sample %d: %w", sampleNr, err)
-		}
-		if len(ranges) != 1 {
-			return nil, fmt.Errorf("unexpected AAC sample range count: %d", len(ranges))
-		}
-		start := int64(ranges[0].Offset)
-		end := start + int64(ranges[0].Size)
-		if start < 0 || end > size || start > end {
-			return nil, fmt.Errorf("invalid MP4 sample bounds for sample %d", sampleNr)
-		}
-		units = append(units, accessUnit{
-			offset:    start,
-			size:      int(ranges[0].Size),
-			rawStart:  rawAt,
-			pcmFrames: pcmFrames,
-		})
-		rawAt += pcmFrames
-		totalPCM += pcmFrames
+	units, totalPCM, rawAt, err := buildMP4AccessUnits(trak, size)
+	if err != nil {
+		return nil, err
 	}
 
 	if leading > totalPCM {
-		return nil, fmt.Errorf("unsupported MP4 AAC track: edit list beyond duration")
+		return nil, unsupportedFeature("MP4 edit list", "edit list beyond duration")
 	}
 	totalPCM -= leading
 	if totalPCM <= 0 {
-		return nil, fmt.Errorf("invalid MP4 AAC track: empty decoded duration")
+		return nil, malformedf("invalid MP4 AAC track: empty decoded duration")
 	}
 
 	return &containerSource{
@@ -242,10 +213,10 @@ type adtsHeader struct {
 
 func readADTSHeader(frame []byte) (adtsHeader, error) {
 	if len(frame) < 7 {
-		return adtsHeader{}, io.ErrUnexpectedEOF
+		return adtsHeader{}, malformedf("unexpected EOF in ADTS header")
 	}
 	if frame[0] != 0xFF || frame[1]&0xF0 != 0xF0 {
-		return adtsHeader{}, fmt.Errorf("invalid syncword")
+		return adtsHeader{}, malformedf("invalid ADTS syncword")
 	}
 
 	header := adtsHeader{
@@ -258,13 +229,13 @@ func readADTSHeader(frame []byte) (adtsHeader, error) {
 		rawDataBlocks: int(frame[6]&0x03) + 1,
 	}
 	if header.profile != aacLCProfile {
-		return adtsHeader{}, fmt.Errorf("unsupported AAC profile: %d (AAC-LC only)", header.profile)
+		return adtsHeader{}, unsupportedFeature("AAC profile", fmt.Sprintf("%d", header.profile))
 	}
 	if header.sampleRateIndex >= len(sampleRates) || sampleRates[header.sampleRateIndex] == 0 {
-		return adtsHeader{}, fmt.Errorf("unsupported AAC sample-rate index: %d", header.sampleRateIndex)
+		return adtsHeader{}, unsupportedFeature("AAC sample rate index", fmt.Sprintf("%d", header.sampleRateIndex))
 	}
 	if header.channelConfig < 1 || header.channelConfig > 2 {
-		return adtsHeader{}, fmt.Errorf("unsupported AAC channel configuration: %d", header.channelConfig)
+		return adtsHeader{}, unsupportedFeature("AAC channel configuration", fmt.Sprintf("%d", header.channelConfig))
 	}
 	return header, nil
 }
@@ -293,32 +264,209 @@ func skipID3v2(reader io.ReaderAt, size int64) (int64, error) {
 	return total, nil
 }
 
-func expandSTTS(trak *mp4.TrakBox) ([]int, error) {
-	if trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil || trak.Mdia.Minf.Stbl.Stts == nil {
-		return nil, fmt.Errorf("invalid MP4 AAC track: incomplete timing tables")
+func buildMP4AccessUnits(trak *mp4.TrakBox, size int64) ([]accessUnit, int, int, error) {
+	if trak.Mdia == nil || trak.Mdia.Minf == nil || trak.Mdia.Minf.Stbl == nil {
+		return nil, 0, 0, malformedf("invalid MP4 AAC track: incomplete sample table")
 	}
 
-	stts := trak.Mdia.Minf.Stbl.Stts
-	totalSamples := trak.GetNrSamples()
-	durations := make([]int, 0, totalSamples)
+	stbl := trak.Mdia.Minf.Stbl
+	if stbl.Stsc == nil || stbl.Stsz == nil || stbl.Stts == nil {
+		return nil, 0, 0, malformedf("invalid MP4 AAC track: incomplete sample table")
+	}
+	if stbl.Stco == nil && stbl.Co64 == nil {
+		return nil, 0, 0, malformedf("invalid MP4 AAC track: missing chunk offsets")
+	}
+	if len(stbl.Stsc.Entries) == 0 {
+		return nil, 0, 0, malformedf("invalid MP4 AAC track: empty chunk map")
+	}
+
+	totalSamples := int(trak.GetNrSamples())
+	if totalSamples <= 0 {
+		return nil, 0, 0, malformedf("invalid MP4 AAC track: empty sample table")
+	}
+
+	sampleSizes, err := mp4SampleSizes(stbl.Stsz, totalSamples)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	stts, err := newMP4STTSCursor(stbl.Stts, totalSamples)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	chunkOffsets, err := mp4ChunkOffsets(stbl)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+
+	units := make([]accessUnit, totalSamples)
+	rawAt := 0
+	totalPCM := 0
+	sampleIndex := 0
+	entryIndex := 0
+	entry := stbl.Stsc.Entries[entryIndex]
+
+	for chunkIndex := 0; chunkIndex < len(chunkOffsets) && sampleIndex < totalSamples; chunkIndex++ {
+		chunkNr := uint32(chunkIndex + 1)
+		for entryIndex+1 < len(stbl.Stsc.Entries) && chunkNr >= stbl.Stsc.Entries[entryIndex+1].FirstChunk {
+			entryIndex++
+			entry = stbl.Stsc.Entries[entryIndex]
+		}
+		if entry.SamplesPerChunk == 0 {
+			return nil, 0, 0, malformedf("invalid MP4 AAC track: zero samples per chunk")
+		}
+
+		offset := chunkOffsets[chunkIndex]
+		samplesPerChunk := int(entry.SamplesPerChunk)
+		for i := 0; i < samplesPerChunk && sampleIndex < totalSamples; i++ {
+			sampleSize := sampleSizes[sampleIndex]
+			end := offset + int64(sampleSize)
+			if offset < 0 || end < offset || end > size {
+				return nil, 0, 0, malformedf("invalid MP4 sample bounds for sample %d", sampleIndex+1)
+			}
+
+			pcmFrames, err := stts.Next()
+			if err != nil {
+				return nil, 0, 0, err
+			}
+
+			units[sampleIndex] = accessUnit{
+				offset:    offset,
+				size:      sampleSize,
+				rawStart:  rawAt,
+				pcmFrames: pcmFrames,
+			}
+			offset = end
+			rawAt += pcmFrames
+			totalPCM += pcmFrames
+			sampleIndex++
+		}
+	}
+
+	if sampleIndex != totalSamples {
+		return nil, 0, 0, malformedf("invalid MP4 AAC track: sample table mismatch")
+	}
+	if err := stts.Done(); err != nil {
+		return nil, 0, 0, err
+	}
+	return units, totalPCM, rawAt, nil
+}
+
+func mp4SampleSizes(stsz *mp4.StszBox, totalSamples int) ([]int, error) {
+	if stsz == nil {
+		return nil, malformedf("invalid MP4 AAC track: missing sample sizes")
+	}
+	if int(stsz.GetNrSamples()) != totalSamples {
+		return nil, malformedf("invalid MP4 AAC track: sample table mismatch")
+	}
+
+	sizes := make([]int, totalSamples)
+	if stsz.SampleUniformSize != 0 {
+		size := int(stsz.SampleUniformSize)
+		for i := range sizes {
+			sizes[i] = size
+		}
+		return sizes, nil
+	}
+	if len(stsz.SampleSize) != totalSamples {
+		return nil, malformedf("invalid MP4 AAC track: sample table mismatch")
+	}
+	for i, size := range stsz.SampleSize {
+		sizes[i] = int(size)
+	}
+	return sizes, nil
+}
+
+func mp4ChunkOffsets(stbl *mp4.StblBox) ([]int64, error) {
+	switch {
+	case stbl == nil:
+		return nil, malformedf("invalid MP4 AAC track: incomplete sample table")
+	case stbl.Stco != nil:
+		offsets := make([]int64, len(stbl.Stco.ChunkOffset))
+		for i, offset := range stbl.Stco.ChunkOffset {
+			offsets[i] = int64(offset)
+		}
+		return offsets, nil
+	case stbl.Co64 != nil:
+		offsets := make([]int64, len(stbl.Co64.ChunkOffset))
+		for i, offset := range stbl.Co64.ChunkOffset {
+			if offset > uint64(^uint64(0)>>1) {
+				return nil, malformedf("invalid MP4 chunk offset")
+			}
+			offsets[i] = int64(offset)
+		}
+		return offsets, nil
+	default:
+		return nil, malformedf("invalid MP4 AAC track: missing chunk offsets")
+	}
+}
+
+type mp4STTSCursor struct {
+	sampleCount []uint32
+	delta       []uint32
+	entryIndex  int
+	remaining   uint32
+	left        int
+}
+
+func newMP4STTSCursor(stts *mp4.SttsBox, totalSamples int) (*mp4STTSCursor, error) {
+	if stts == nil || len(stts.SampleCount) == 0 || len(stts.SampleCount) != len(stts.SampleTimeDelta) {
+		return nil, malformedf("invalid MP4 AAC track: incomplete timing tables")
+	}
+
+	total := 0
 	for i := range stts.SampleCount {
 		count := int(stts.SampleCount[i])
 		delta := int(stts.SampleTimeDelta[i])
 		isLastEntry := i == len(stts.SampleCount)-1
+		if count <= 0 {
+			return nil, malformedf("invalid MP4 AAC track: empty timing entry")
+		}
 		if delta <= 0 || delta > aacFrameSize {
-			return nil, fmt.Errorf("unsupported MP4 AAC sample delta: %d", delta)
+			return nil, unsupportedFeature("MP4 sample delta", fmt.Sprintf("%d", delta))
 		}
 		if !isLastEntry && delta != aacFrameSize {
-			return nil, fmt.Errorf("unsupported MP4 AAC sample delta: %d", delta)
+			return nil, unsupportedFeature("MP4 sample delta", fmt.Sprintf("%d", delta))
 		}
 		if isLastEntry && count > 1 && delta != aacFrameSize {
-			return nil, fmt.Errorf("unsupported MP4 AAC sample delta layout")
+			return nil, unsupportedFeature("MP4 sample delta layout", "")
 		}
-		for j := 0; j < count; j++ {
-			durations = append(durations, delta)
-		}
+		total += count
 	}
-	return durations, nil
+	if total != totalSamples {
+		return nil, malformedf("invalid MP4 AAC track: sample table mismatch")
+	}
+
+	return &mp4STTSCursor{
+		sampleCount: stts.SampleCount,
+		delta:       stts.SampleTimeDelta,
+		remaining:   stts.SampleCount[0],
+		left:        totalSamples,
+	}, nil
+}
+
+func (c *mp4STTSCursor) Next() (int, error) {
+	if c.left == 0 {
+		return 0, malformedf("invalid MP4 AAC track: sample table mismatch")
+	}
+	for c.remaining == 0 {
+		c.entryIndex++
+		if c.entryIndex >= len(c.sampleCount) {
+			return 0, malformedf("invalid MP4 AAC track: sample table mismatch")
+		}
+		c.remaining = c.sampleCount[c.entryIndex]
+	}
+
+	delta := int(c.delta[c.entryIndex])
+	c.remaining--
+	c.left--
+	return delta, nil
+}
+
+func (c *mp4STTSCursor) Done() error {
+	if c.left != 0 {
+		return malformedf("invalid MP4 AAC track: sample table mismatch")
+	}
+	return nil
 }
 
 func mp4LeadingTrim(trak *mp4.TrakBox) (int, error) {
@@ -326,36 +474,60 @@ func mp4LeadingTrim(trak *mp4.TrakBox) (int, error) {
 		return 0, nil
 	}
 	if len(trak.Edts.Elst) != 1 || len(trak.Edts.Elst[0].Entries) != 1 {
-		return 0, fmt.Errorf("unsupported MP4 AAC track: complex edit lists")
+		return 0, unsupportedFeature("MP4 edit list", "complex edit lists")
 	}
 
 	entry := trak.Edts.Elst[0].Entries[0]
 	if entry.MediaRateInteger != 1 || entry.MediaRateFraction != 0 {
-		return 0, fmt.Errorf("unsupported MP4 AAC track: non-unit edit rate")
+		return 0, unsupportedFeature("MP4 edit list", "non-unit edit rate")
 	}
 	if entry.MediaTime < 0 {
-		return 0, fmt.Errorf("unsupported MP4 AAC track: negative edit list media time")
+		return 0, unsupportedFeature("MP4 edit list", "negative media time")
 	}
 	return int(entry.MediaTime), nil
 }
 
 func parseASC(asc []byte) (ascConfig, error) {
 	if len(asc) < 2 {
-		return ascConfig{}, fmt.Errorf("invalid AudioSpecificConfig")
+		return ascConfig{}, malformedf("invalid AudioSpecificConfig")
 	}
 
-	objectType := int(asc[0] >> 3)
-	sampleRateIndex := int(((asc[0] & 0x07) << 1) | (asc[1] >> 7))
-	channelConfig := int((asc[1] >> 3) & 0x0F)
+	br := ascBitReader{data: asc}
+
+	objectType, err := br.readAudioObjectType()
+	if err != nil {
+		return ascConfig{}, malformedf("invalid AudioSpecificConfig: %v", err)
+	}
+	if objectType == 5 || objectType == 29 {
+		return ascConfig{}, unsupportedFeature("HE-AAC/SBR", "base AudioSpecificConfig")
+	}
+
+	sampleRateIndex, err := br.readSampleRateIndex()
+	if err != nil {
+		if errors.Is(err, ErrUnsupportedBitstream) {
+			return ascConfig{}, err
+		}
+		return ascConfig{}, malformedf("invalid AudioSpecificConfig: %v", err)
+	}
+	channelConfig, err := br.readInt(4)
+	if err != nil {
+		return ascConfig{}, malformedf("invalid AudioSpecificConfig: %v", err)
+	}
 
 	if objectType != aacLCProfile {
-		return ascConfig{}, fmt.Errorf("unsupported AAC profile: %d (AAC-LC only)", objectType)
+		return ascConfig{}, unsupportedFeature("AAC profile", fmt.Sprintf("%d", objectType))
 	}
 	if sampleRateIndex >= len(sampleRates) || sampleRates[sampleRateIndex] == 0 {
-		return ascConfig{}, fmt.Errorf("unsupported AAC sample-rate index: %d", sampleRateIndex)
+		return ascConfig{}, unsupportedFeature("AAC sample rate index", fmt.Sprintf("%d", sampleRateIndex))
 	}
 	if channelConfig < 1 || channelConfig > 2 {
-		return ascConfig{}, fmt.Errorf("unsupported AAC channel configuration: %d", channelConfig)
+		return ascConfig{}, unsupportedFeature("AAC channel configuration", fmt.Sprintf("%d", channelConfig))
+	}
+	if err := br.skipGASpecificConfig(objectType, channelConfig); err != nil {
+		return ascConfig{}, err
+	}
+	if err := br.rejectSyncExtensions(); err != nil {
+		return ascConfig{}, err
 	}
 
 	return ascConfig{
@@ -371,6 +543,136 @@ func makeASC(objectType, sampleRateIndex, channelConfig int) []byte {
 		byte(objectType<<3) | byte(sampleRateIndex>>1),
 		byte(sampleRateIndex&0x01)<<7 | byte(channelConfig<<3),
 	}
+}
+
+type ascBitReader struct {
+	data []byte
+	bit  int
+}
+
+func (r *ascBitReader) bitsLeft() int {
+	return len(r.data)*8 - r.bit
+}
+
+func (r *ascBitReader) readBits(n int) (uint64, error) {
+	if n < 0 {
+		return 0, fmt.Errorf("invalid bit count %d", n)
+	}
+	if r.bitsLeft() < n {
+		return 0, fmt.Errorf("unexpected EOF")
+	}
+
+	var out uint64
+	for i := 0; i < n; i++ {
+		byteIdx := (r.bit + i) / 8
+		bitIdx := 7 - ((r.bit + i) % 8)
+		out = (out << 1) | uint64((r.data[byteIdx]>>bitIdx)&0x01)
+	}
+	r.bit += n
+	return out, nil
+}
+
+func (r *ascBitReader) readInt(n int) (int, error) {
+	v, err := r.readBits(n)
+	return int(v), err
+}
+
+func (r *ascBitReader) readAudioObjectType() (int, error) {
+	objectType, err := r.readInt(5)
+	if err != nil {
+		return 0, err
+	}
+	if objectType == 31 {
+		ext, err := r.readInt(6)
+		if err != nil {
+			return 0, err
+		}
+		objectType = 32 + ext
+	}
+	return objectType, nil
+}
+
+func (r *ascBitReader) readSampleRateIndex() (int, error) {
+	sampleRateIndex, err := r.readInt(4)
+	if err != nil {
+		return 0, err
+	}
+	if sampleRateIndex == 15 {
+		return 0, unsupportedFeature("AAC sample rate", "explicit sample rate escape")
+	}
+	return sampleRateIndex, nil
+}
+
+func (r *ascBitReader) skipGASpecificConfig(objectType, channelConfig int) error {
+	frameLengthFlag, err := r.readInt(1)
+	if err != nil {
+		return malformedf("invalid AudioSpecificConfig: %v", err)
+	}
+	if frameLengthFlag != 0 {
+		return unsupportedFeature("AAC frame length", "960-sample frames")
+	}
+
+	dependsOnCoreCoder, err := r.readInt(1)
+	if err != nil {
+		return malformedf("invalid AudioSpecificConfig: %v", err)
+	}
+	if dependsOnCoreCoder != 0 {
+		return unsupportedFeature("AAC core coder dependency", "")
+	}
+
+	extensionFlag, err := r.readInt(1)
+	if err != nil {
+		return malformedf("invalid AudioSpecificConfig: %v", err)
+	}
+	if channelConfig == 0 {
+		return unsupportedFeature("AAC channel configuration", "program config element")
+	}
+	if extensionFlag != 0 {
+		return unsupportedFeature("AAC extension flag", "")
+	}
+	if objectType != aacLCProfile {
+		return unsupportedFeature("AAC profile", fmt.Sprintf("%d", objectType))
+	}
+	return nil
+}
+
+func (r *ascBitReader) rejectSyncExtensions() error {
+	if r.bitsLeft() < 16 {
+		return nil
+	}
+
+	syncExtensionType, err := r.readInt(11)
+	if err != nil {
+		return malformedf("invalid AudioSpecificConfig sync extension: %v", err)
+	}
+	if syncExtensionType != 0x2b7 {
+		return nil
+	}
+
+	extensionObjectType, err := r.readAudioObjectType()
+	if err != nil {
+		return malformedf("invalid AudioSpecificConfig sync extension: %v", err)
+	}
+	switch extensionObjectType {
+	case 5:
+		sbrPresent, err := r.readInt(1)
+		if err != nil {
+			return malformedf("invalid AudioSpecificConfig sync extension: %v", err)
+		}
+		if sbrPresent != 0 {
+			return unsupportedFeature("HE-AAC/SBR", "sync extension")
+		}
+	case 29:
+		sbrPresent, err := r.readInt(1)
+		if err != nil {
+			return malformedf("invalid AudioSpecificConfig sync extension: %v", err)
+		}
+		if sbrPresent != 0 {
+			return unsupportedFeature("HE-AACv2/PS", "sync extension")
+		}
+	}
+
+	return nil
 }
 
 func makeADTSFrame(asc []byte, payload []byte) []byte {

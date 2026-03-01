@@ -737,6 +737,13 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		return m, m.shutdown()
 
 	case trackFailedMsg:
+		if msg.err != nil {
+			m.saveMsg = fmt.Sprintf("Track failed: %v", msg.err)
+		} else {
+			m.saveMsg = "Track failed"
+		}
+		m.saveMsgTime = time.Now()
+		m.invalidate(dirtyMid)
 		if m.queue != nil {
 			return m.skipToNext()
 		}
@@ -1053,7 +1060,7 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		if err != nil {
 			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Failed)
 			m.invalidate(dirtyQueue)
-			return m, func() tea.Msg { return trackFailedMsg{} }
+			return m, func() tea.Msg { return trackFailedMsg{err: err} }
 		}
 		m.elapsed = 0
 		m.duration = m.player.Duration()
@@ -1151,7 +1158,7 @@ func (m Model) advanceToTrack(track *queue.Track) (Model, tea.Cmd) {
 		if m.queue != nil {
 			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Failed)
 			m.invalidate(dirtyQueue)
-			return m, func() tea.Msg { return trackFailedMsg{} }
+			return m, func() tea.Msg { return trackFailedMsg{err: err} }
 		}
 		m.quitting = true
 		return m, m.shutdown()

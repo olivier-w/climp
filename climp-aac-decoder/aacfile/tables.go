@@ -33,6 +33,13 @@ var (
 	kbdShortWindow  []float64
 
 	pow43Table []float64
+
+	tnsMaxBandsLong = []int{
+		31, 31, 34, 40, 42, 51, 46, 46, 42, 42, 42, 39, 39, 0, 0, 0,
+	}
+	tnsMaxBandsShort = []int{
+		9, 9, 10, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14, 0, 0, 0,
+	}
 )
 
 func initDecodeTables() {

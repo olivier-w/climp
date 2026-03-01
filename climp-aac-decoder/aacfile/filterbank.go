@@ -1,7 +1,7 @@
 package aacfile
 
-func (d *synthDecoder) synthChannel(ch int, meta *icsMeta, spec []float64, currentShape uint8) []float64 {
-	windowed := d.windowSequence(meta.windowSequence, d.state[ch].prevWindowShape, currentShape, spec)
+func (d *synthDecoder) synthChannel(ch int, meta *icsMeta, spec []float64, currentShape uint8) ([]float64, channelSynthStats) {
+	windowed, imdctPeak := d.windowSequence(meta.windowSequence, d.state[ch].prevWindowShape, currentShape, spec)
 
 	pcm := make([]float64, longWindowLength)
 	for i := 0; i < longWindowLength; i++ {
@@ -9,21 +9,33 @@ func (d *synthDecoder) synthChannel(ch int, meta *icsMeta, spec []float64, curre
 	}
 	copy(d.state[ch].overlap, windowed[longWindowLength:])
 	d.state[ch].prevWindowShape = currentShape
-	return pcm
+	return pcm, channelSynthStats{
+		imdctPeak:   imdctPeak,
+		overlapPeak: peakAbs(pcm),
+		pcmPeak:     peakAbs(pcm),
+	}
 }
 
-func (d *synthDecoder) windowSequence(sequence, prevShape, currentShape uint8, spec []float64) []float64 {
+func (d *synthDecoder) windowSequence(sequence, prevShape, currentShape uint8, spec []float64) ([]float64, float64) {
 	switch sequence {
 	case windowOnlyLong:
-		return applyOnlyLong(prevShape, currentShape, longIMDCTPlan.transform(spec, &d.longIMDCTWork))
+		block := longIMDCTPlan.transform(spec, &d.longIMDCTWork)
+		imdctPeak := peakAbs(block)
+		return applyOnlyLong(prevShape, currentShape, block), imdctPeak
 	case windowLongStart:
-		return applyLongStart(prevShape, currentShape, longIMDCTPlan.transform(spec, &d.longIMDCTWork))
+		block := longIMDCTPlan.transform(spec, &d.longIMDCTWork)
+		imdctPeak := peakAbs(block)
+		return applyLongStart(prevShape, currentShape, block), imdctPeak
 	case windowLongStop:
-		return applyLongStop(prevShape, currentShape, longIMDCTPlan.transform(spec, &d.longIMDCTWork))
+		block := longIMDCTPlan.transform(spec, &d.longIMDCTWork)
+		imdctPeak := peakAbs(block)
+		return applyLongStop(prevShape, currentShape, block), imdctPeak
 	case windowEightShort:
 		return d.applyEightShort(prevShape, currentShape, spec)
 	default:
-		return applyOnlyLong(prevShape, currentShape, longIMDCTPlan.transform(spec, &d.longIMDCTWork))
+		block := longIMDCTPlan.transform(spec, &d.longIMDCTWork)
+		imdctPeak := peakAbs(block)
+		return applyOnlyLong(prevShape, currentShape, block), imdctPeak
 	}
 }
 
@@ -67,12 +79,14 @@ func applyLongStop(prevShape, currentShape uint8, block []float64) []float64 {
 	return block
 }
 
-func (d *synthDecoder) applyEightShort(prevShape, currentShape uint8, spec []float64) []float64 {
+func (d *synthDecoder) applyEightShort(prevShape, currentShape uint8, spec []float64) ([]float64, float64) {
 	out := make([]float64, longBlockLength)
 	prev := shortWindow(prevShape)
 	curr := shortWindow(currentShape)
+	imdctPeak := 0.0
 	for wnd := 0; wnd < 8; wnd++ {
 		block := shortIMDCTPlan.transform(spec[wnd*shortWindowLength:(wnd+1)*shortWindowLength], &d.shortIMDCTWork)
+		imdctPeak = maxFloat64(imdctPeak, peakAbs(block))
 		left := curr
 		if wnd == 0 {
 			left = prev
@@ -87,5 +101,5 @@ func (d *synthDecoder) applyEightShort(prevShape, currentShape uint8, spec []flo
 			out[start+i] += block[i]
 		}
 	}
-	return out
+	return out, imdctPeak
 }

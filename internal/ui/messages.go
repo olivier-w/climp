@@ -35,7 +35,9 @@ type playlistExtractedMsg struct {
 	err     error
 }
 
-type trackFailedMsg struct{}
+type trackFailedMsg struct {
+	err error
+}
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {

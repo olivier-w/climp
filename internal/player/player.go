@@ -1,6 +1,7 @@
 package player
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -95,6 +96,8 @@ func initOto(sampleRate, channelCount int) (*oto.Context, error) {
 			if globalOtoCtx != nil {
 				if ctxErr := globalOtoCtx.Err(); ctxErr != nil {
 					otoInitErr = friendlyAudioInitError(ctxErr)
+				} else {
+					warmAudioOutput(globalOtoCtx, sampleRate, channelCount)
 				}
 			}
 		} else {
@@ -102,6 +105,25 @@ func initOto(sampleRate, channelCount int) (*oto.Context, error) {
 		}
 	})
 	return globalOtoCtx, otoInitErr
+}
+
+func warmAudioOutput(ctx *oto.Context, sampleRate, channelCount int) {
+	if runtime.GOOS != "windows" || ctx == nil {
+		return
+	}
+
+	const warmup = 500 * time.Millisecond
+	byteCount := sampleRate * channelCount * 2 * int(warmup) / int(time.Second)
+	if byteCount <= 0 {
+		return
+	}
+
+	silence := bytes.NewReader(make([]byte, byteCount))
+	player := ctx.NewPlayer(silence)
+	player.SetVolume(0)
+	player.Play()
+	time.Sleep(warmup)
+	_ = player.Close()
 }
 
 func friendlyAudioInitError(err error) error {

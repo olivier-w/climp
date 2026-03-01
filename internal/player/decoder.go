@@ -125,22 +125,104 @@ func newNativeDecoder(f *os.File) (audioDecoder, error) {
 // --- MP3 decoder ---
 
 type mp3Decoder struct {
-	dec *mp3.Decoder
+	dec    *mp3.Decoder
+	pos    int64
+	length int64
+	start  int64
 }
 
 func newMP3Decoder(f *os.File) (*mp3Decoder, error) {
+	startTrim, endTrim, err := readMP3GaplessTrim(f)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+
 	dec, err := mp3.NewDecoder(f)
 	if err != nil {
 		return nil, err
 	}
-	return &mp3Decoder{dec: dec}, nil
+
+	length := dec.Length()
+	frameBytes := int64(4) // go-mp3 always outputs 16-bit stereo PCM.
+	startBytes := startTrim * frameBytes
+	endBytes := endTrim * frameBytes
+	if length >= 0 {
+		if startBytes > length {
+			startBytes = length
+		}
+		if endBytes > length-startBytes {
+			endBytes = length - startBytes
+		}
+		length -= startBytes + endBytes
+	}
+
+	d := &mp3Decoder{
+		dec:    dec,
+		length: length,
+		start:  startBytes,
+	}
+	if startBytes > 0 {
+		if _, err := dec.Seek(startBytes, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+	return d, nil
 }
 
-func (d *mp3Decoder) Read(p []byte) (int, error) { return d.dec.Read(p) }
-func (d *mp3Decoder) Seek(offset int64, whence int) (int64, error) {
-	return d.dec.Seek(offset, whence)
+func (d *mp3Decoder) Read(p []byte) (int, error) {
+	if d.length >= 0 && d.pos >= d.length {
+		return 0, io.EOF
+	}
+	if d.length >= 0 {
+		remaining := d.length - d.pos
+		if remaining <= 0 {
+			return 0, io.EOF
+		}
+		if int64(len(p)) > remaining {
+			p = p[:remaining]
+		}
+	}
+
+	n, err := d.dec.Read(p)
+	d.pos += int64(n)
+	if d.length >= 0 && d.pos >= d.length {
+		if n == 0 {
+			return 0, io.EOF
+		}
+		return n, io.EOF
+	}
+	return n, err
 }
-func (d *mp3Decoder) Length() int64    { return d.dec.Length() }
+func (d *mp3Decoder) Seek(offset int64, whence int) (int64, error) {
+	var next int64
+	switch whence {
+	case io.SeekStart:
+		next = offset
+	case io.SeekCurrent:
+		next = d.pos + offset
+	case io.SeekEnd:
+		next = d.length + offset
+	default:
+		return d.pos, fmt.Errorf("invalid seek whence: %d", whence)
+	}
+	if next < 0 {
+		next = 0
+	}
+	if d.length >= 0 && next > d.length {
+		next = d.length
+	}
+	next -= next % 4
+
+	if _, err := d.dec.Seek(d.start+next, io.SeekStart); err != nil {
+		return d.pos, err
+	}
+	d.pos = next
+	return next, nil
+}
+func (d *mp3Decoder) Length() int64    { return d.length }
 func (d *mp3Decoder) SampleRate() int  { return d.dec.SampleRate() }
 // ChannelCount returns 2 because go-mp3 always decodes to stereo output.
 func (d *mp3Decoder) ChannelCount() int { return 2 }

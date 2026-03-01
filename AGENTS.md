@@ -35,7 +35,7 @@ If Go is missing from PATH on Windows, use:
 
 - `internal/player/`: audio engine and decoder pipeline
   - decoders normalize to 16-bit LE PCM
-  - local `.aac`/`.m4a`/`.m4b` playback is ffmpeg -> temp WAV -> existing local decoder path (`player.New`)
+  - local `.aac`/`.m4a`/`.m4b` playback is native Go via `climp-aac-decoder` (`player.New`)
   - live stream path: ffmpeg subprocess -> PCM pipe (`player.NewStream`)
   - pipeline: decoder -> countingReader -> speedReader -> Oto
   - `countingReader` also feeds visualizer ring buffer
@@ -86,9 +86,20 @@ Notes:
 
 - `yt-dlp`: URL playback and playlist extraction
 - `ffmpeg`:
-  - local `.aac` / `.m4a` / `.m4b` playback via temp WAV transcode
   - live URL playback decode path (`ffmpeg -> s16le PCM pipe`)
   - save downloaded URL tracks to MP3 (`s` key)
+
+## AAC Decoder Guardrails
+
+When working in `climp-aac-decoder/`, default to audio quality and parity over speculative math changes.
+
+- Treat decoder math as correctness-critical. Do not rewrite IMDCT, filterbank, TNS, scalefactor, stereo, or short-window ordering logic without a measured parity reason.
+- Preserve the current runtime rule that local `.aac` / `.m4a` / `.m4b` playback stays native-only. Do not reintroduce runtime `ffmpeg` for local AAC playback.
+- Use `climp-aac-decoder/cmd/aacparity` plus the AAC fixtures in `songs/` before and after decoder-math changes.
+- Use `songs/BeyondGoodEvil_librivox.m4b` as the primary listening/parity asset for narration quality.
+- If a decoder change improves benchmarks but worsens parity or listening quality, reject it.
+- Prefer fail-closed behavior for unvalidated AAC features over approximate output.
+- Keep short-window and transition-region changes especially conservative; those areas have already caused audible artifacts in this repo.
 
 ## Platform Notes
 

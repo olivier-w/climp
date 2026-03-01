@@ -115,6 +115,8 @@ func newNativeDecoder(f *os.File) (audioDecoder, error) {
 		return newFLACDecoder(f)
 	case ".ogg":
 		return newOGGDecoder(f)
+	case ".aac", ".m4a", ".m4b":
+		return newAACDecoder(f)
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", ext)
 	}

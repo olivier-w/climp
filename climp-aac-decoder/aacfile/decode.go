@@ -367,10 +367,7 @@ func applyScaleFactors(spec []float64, meta *icsMeta, scaleFactors [][]int) {
 			}
 
 			sf := scaleFactors[g][sfb]
-			scale := 1.0
-			if sf >= 0 && sf <= 255 {
-				scale = math.Pow(2, 0.25*float64(sf-100))
-			}
+			scale := math.Pow(2, 0.25*float64(sf-100))
 			start := groupBase + meta.sectSFBOffset[g][sfb]
 			end := groupBase + meta.sectSFBOffset[g][sfb+1]
 			for i := start; i < end; i++ {
@@ -411,17 +408,22 @@ func applyPulseData(spec []int, meta *icsMeta, pulse any) {
 func reorderShortSpectral(spec []float64, meta *icsMeta) []float64 {
 	out := make([]float64, len(spec))
 	windowBase := 0
-	srcBase := 0
 	for g := 0; g < meta.numWindowGroups; g++ {
 		groupLen := meta.windowGroupLength[g]
+		groupBase := windowBase * shortWindowLength
+		srcOffset := 0
 		for sfb := 0; sfb < meta.maxSFB; sfb++ {
 			start := meta.swbOffset[sfb]
 			end := meta.swbOffset[sfb+1]
 			width := end - start
 			for w := 0; w < groupLen; w++ {
 				dst := (windowBase+w)*shortWindowLength + start
-				copy(out[dst:dst+width], spec[srcBase:srcBase+width])
-				srcBase += width
+				// Each grouped short-window payload is stored on a full
+				// groupLen*128 stride even when maxSFB stops before the tail.
+				// Advancing from the group's base keeps later groups aligned.
+				src := groupBase + srcOffset
+				copy(out[dst:dst+width], spec[src:src+width])
+				srcOffset += width
 			}
 		}
 		windowBase += groupLen

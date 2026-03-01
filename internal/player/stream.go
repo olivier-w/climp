@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	streamSampleRate = 44100
+	streamSampleRate = playbackSampleRate
 	streamChannels   = 2
 )
 
@@ -39,7 +39,7 @@ func newStreamDecoder(url string) (*streamDecoder, error) {
 		"-i", url,
 		"-vn",
 		"-ac", "2",
-		"-ar", "44100",
+		"-ar", "48000",
 		"-f", "s16le",
 		"pipe:1",
 	)

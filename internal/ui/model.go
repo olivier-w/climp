@@ -33,18 +33,23 @@ const maxVizHeight = 8 // maximum lines for the visualizer
 
 // Model is the Bubbletea model for the climp TUI.
 type Model struct {
-	player      *player.Player
-	metadata    player.Metadata
-	elapsed     time.Duration
-	duration    time.Duration
-	volume      float64
-	paused      bool
-	width       int
-	height      int
-	quitting    bool
-	repeatMode  RepeatMode
-	shuffleMode ShuffleMode
-	speed       player.SpeedMode
+	player       *player.Player
+	metadata     player.Metadata
+	elapsed      time.Duration
+	duration     time.Duration
+	volume       float64
+	paused       bool
+	seekPending  bool
+	seekApplying bool
+	seekTarget   time.Duration
+	seekResume   bool
+	seekSeq      uint64
+	width        int
+	height       int
+	quitting     bool
+	repeatMode   RepeatMode
+	shuffleMode  ShuffleMode
+	speed        player.SpeedMode
 
 	sourcePath  string    // temp file path (empty for local files)
 	sourceTitle string    // title for saved filename
@@ -513,6 +518,7 @@ func waitForLiveTitle(p *player.Player) tea.Cmd {
 }
 
 func (m *Model) shutdown() tea.Cmd {
+	m.clearSeekState()
 	if m.player != nil {
 		m.player.Close()
 		m.player = nil
@@ -525,6 +531,58 @@ func (m *Model) shutdown() tea.Cmd {
 		m.queue.CleanupAll()
 	}
 	return tea.Sequence(tea.SetWindowTitle(""), tea.Quit)
+}
+
+func (m *Model) clearSeekState() {
+	m.seekPending = false
+	m.seekApplying = false
+	m.seekTarget = 0
+	m.seekResume = false
+}
+
+func (m *Model) beginSeekPreview(base, delta time.Duration, resume bool) tea.Cmd {
+	target := base + delta
+	if target < 0 {
+		target = 0
+	}
+	if m.duration > 0 && target > m.duration {
+		target = m.duration
+	}
+
+	m.seekPending = true
+	m.seekTarget = target
+	m.seekResume = resume
+	m.elapsed = target
+	m.paused = true
+	m.seekSeq++
+	m.invalidate(dirtyMid)
+	return seekDebounceCmd(m.player, m.seekSeq)
+}
+
+func (m *Model) queueSeekDelta(delta time.Duration) tea.Cmd {
+	if m.player == nil || !m.player.CanSeek() {
+		return nil
+	}
+
+	base := m.player.Position()
+	if m.seekPending || m.seekApplying {
+		base = m.seekTarget
+	} else {
+		m.seekResume = !m.player.Paused()
+		if m.seekResume {
+			m.player.Pause()
+		}
+	}
+
+	return m.beginSeekPreview(base, delta, m.seekResume)
+}
+
+func (m *Model) applyPendingSeek() tea.Cmd {
+	if m.player == nil || !m.seekPending {
+		return nil
+	}
+	m.seekApplying = true
+	return applySeekCmd(m.player, m.seekSeq, m.seekTarget, m.seekResume)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -553,18 +611,17 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case " ":
+			if m.seekPending || m.seekApplying {
+				return m, nil
+			}
 			m.player.TogglePause()
 			m.paused = m.player.Paused()
 			m.invalidate(dirtyMid)
 			return m, tea.SetWindowTitle(windowTitle(m.metadata.Title, m.paused))
 		case "left", "h":
-			if m.player.CanSeek() {
-				m.player.Seek(-5 * time.Second)
-			}
+			return m, m.queueSeekDelta(-5 * time.Second)
 		case "right", "l":
-			if m.player.CanSeek() {
-				m.player.Seek(5 * time.Second)
-			}
+			return m, m.queueSeekDelta(5 * time.Second)
 		case "+", "=":
 			m.player.AdjustVolume(0.05)
 			m.volume = m.player.Volume()
@@ -682,14 +739,53 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		if m.player == nil {
 			return m, nil
 		}
-		m.elapsed = m.player.Position()
 		m.volume = m.player.Volume()
-		m.paused = m.player.Paused()
+		if m.seekPending || m.seekApplying {
+			m.paused = true
+		} else {
+			m.elapsed = m.player.Position()
+			m.paused = m.player.Paused()
+		}
 		if m.saveMsg != "" && time.Since(m.saveMsgTime) > 5*time.Second {
 			m.saveMsg = ""
 		}
 		m.invalidate(dirtyMid)
 		return m, tickCmd()
+
+	case seekDebounceMsg:
+		if msg.player != m.player || !m.seekPending || msg.seq != m.seekSeq {
+			return m, nil
+		}
+		if m.seekApplying {
+			return m, nil
+		}
+		return m, m.applyPendingSeek()
+
+	case seekAppliedMsg:
+		if msg.player != m.player {
+			return m, nil
+		}
+		if msg.seq != m.seekSeq {
+			return m, m.applyPendingSeek()
+		}
+
+		m.seekApplying = false
+		if msg.err != nil {
+			m.clearSeekState()
+			m.saveMsg = fmt.Sprintf("Seek failed: %v", msg.err)
+			m.saveMsgTime = time.Now()
+			m.elapsed = m.player.Position()
+			m.paused = m.player.Paused()
+			m.invalidate(dirtyMid)
+			return m, nil
+		}
+
+		resume := m.seekResume
+		m.clearSeekState()
+		m.elapsed = msg.target
+		m.paused = !resume
+		m.invalidate(dirtyMid)
+		return m, nil
 
 	case vizTickMsg:
 		if m.player == nil {
@@ -737,6 +833,13 @@ func (m Model) handleMsg(msg tea.Msg) (Model, tea.Cmd) {
 		return m, m.shutdown()
 
 	case trackFailedMsg:
+		if msg.err != nil {
+			m.saveMsg = fmt.Sprintf("Track failed: %v", msg.err)
+		} else {
+			m.saveMsg = "Track failed"
+		}
+		m.saveMsgTime = time.Now()
+		m.invalidate(dirtyMid)
 		if m.queue != nil {
 			return m.skipToNext()
 		}
@@ -842,6 +945,7 @@ func (m Model) advanceAndPlay() (Model, tea.Cmd) {
 func (m Model) enterTransitioning(nextIdx int) (Model, tea.Cmd) {
 	m.transitioning = true
 	m.transitionTarget = nextIdx
+	m.clearSeekState()
 	if m.player != nil {
 		m.player.Close()
 	}
@@ -895,6 +999,7 @@ func (m Model) jumpToSelected() (Model, tea.Cmd) {
 		m.transitioning = true
 		m.transitionTarget = targetIdx
 		m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Done)
+		m.clearSeekState()
 		if m.player != nil {
 			m.player.Close()
 		}
@@ -1043,6 +1148,7 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		m.queue.SetCurrentIndex(m.transitionTarget)
 		m.queue.SetTrackState(m.transitionTarget, queue.Playing)
 		m.transitionTarget = -1
+		m.clearSeekState()
 		track := m.queue.Current()
 		m.metadata = player.Metadata{Title: track.Title}
 		m.sourceTitle = track.Title
@@ -1053,7 +1159,7 @@ func (m Model) handleTrackDownloaded(msg trackDownloadedMsg) (Model, tea.Cmd) {
 		if err != nil {
 			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Failed)
 			m.invalidate(dirtyQueue)
-			return m, func() tea.Msg { return trackFailedMsg{} }
+			return m, func() tea.Msg { return trackFailedMsg{err: err} }
 		}
 		m.elapsed = 0
 		m.duration = m.player.Duration()
@@ -1119,6 +1225,7 @@ func (m Model) handlePlaylistExtracted(msg playlistExtractedMsg) (Model, tea.Cmd
 
 // advanceToTrack switches playback to the given track.
 func (m Model) advanceToTrack(track *queue.Track) (Model, tea.Cmd) {
+	m.clearSeekState()
 	if m.player != nil {
 		m.player.Close()
 	}
@@ -1151,7 +1258,7 @@ func (m Model) advanceToTrack(track *queue.Track) (Model, tea.Cmd) {
 		if m.queue != nil {
 			m.queue.SetTrackState(m.queue.CurrentIndex(), queue.Failed)
 			m.invalidate(dirtyQueue)
-			return m, func() tea.Msg { return trackFailedMsg{} }
+			return m, func() tea.Msg { return trackFailedMsg{err: err} }
 		}
 		m.quitting = true
 		return m, m.shutdown()

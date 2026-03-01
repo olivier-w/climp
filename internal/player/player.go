@@ -1,6 +1,7 @@
 package player
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -95,6 +96,8 @@ func initOto(sampleRate, channelCount int) (*oto.Context, error) {
 			if globalOtoCtx != nil {
 				if ctxErr := globalOtoCtx.Err(); ctxErr != nil {
 					otoInitErr = friendlyAudioInitError(ctxErr)
+				} else {
+					warmAudioOutput(globalOtoCtx, sampleRate, channelCount)
 				}
 			}
 		} else {
@@ -102,6 +105,25 @@ func initOto(sampleRate, channelCount int) (*oto.Context, error) {
 		}
 	})
 	return globalOtoCtx, otoInitErr
+}
+
+func warmAudioOutput(ctx *oto.Context, sampleRate, channelCount int) {
+	if runtime.GOOS != "windows" || ctx == nil {
+		return
+	}
+
+	const warmup = 500 * time.Millisecond
+	byteCount := sampleRate * channelCount * 2 * int(warmup) / int(time.Second)
+	if byteCount <= 0 {
+		return
+	}
+
+	silence := bytes.NewReader(make([]byte, byteCount))
+	player := ctx.NewPlayer(silence)
+	player.SetVolume(0)
+	player.Play()
+	time.Sleep(warmup)
+	_ = player.Close()
 }
 
 func friendlyAudioInitError(err error) error {
@@ -123,43 +145,41 @@ func friendlyAudioInitError(err error) error {
 	return fmt.Errorf("no Linux audio output device found (ALSA default device unavailable). This is common on headless VMs/containers; configure ALSA/PipeWire/PulseAudio or use a machine with audio")
 }
 
-// New creates a new Player for the given audio file path.
-func New(path string) (*Player, error) {
-	openPath := path
-	var cleanup func()
-	if needsLocalFFmpegTranscode(path) {
-		var err error
-		openPath, cleanup, err = transcodeToTempWAV(path)
-		if err != nil {
-			return nil, err
-		}
+func clampSeekByteOffset(target time.Duration, bytesPerSec int, totalBytes, frameSize int64) int64 {
+	if bytesPerSec <= 0 {
+		return 0
 	}
 
-	f, err := os.Open(openPath)
+	newPos := int64(target.Seconds() * float64(bytesPerSec))
+	if newPos < 0 {
+		newPos = 0
+	}
+	if totalBytes >= 0 && newPos > totalBytes {
+		newPos = totalBytes
+	}
+	if frameSize > 0 {
+		newPos -= newPos % frameSize
+	}
+	return newPos
+}
+
+// New creates a new Player for the given audio file path.
+func New(path string) (*Player, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		if cleanup != nil {
-			cleanup()
-		}
 		return nil, err
 	}
 
 	dec, err := newDecoder(f)
 	if err != nil {
 		f.Close()
-		if cleanup != nil {
-			cleanup()
-		}
 		return nil, err
 	}
 
 	p, err := newFromDecoder(f, dec, true)
 	if err != nil {
-		if cleanup != nil {
-			cleanup()
-		}
 		return nil, err
 	}
-	p.cleanup = cleanup
 	return p, nil
 }
 
@@ -191,7 +211,7 @@ func newFromDecoder(file *os.File, dec audioDecoder, canSeek bool) (*Player, err
 		dur = time.Duration(float64(totalBytes) / float64(bytesPerSec) * float64(time.Second))
 	}
 
-	// ~90ms at 44100Hz stereo 16-bit = 44100 * 2 * 2 * 0.09 ≈ 16KB
+	// ~90ms at 48kHz stereo 16-bit = 48000 * 2 * 2 * 0.09 ~= 17KB
 	sampleBuf := visualizer.NewRingBuffer(16384)
 	cr := &countingReader{reader: dec, sampleBuf: sampleBuf}
 	frameSize := dec.ChannelCount() * 2
@@ -292,15 +312,15 @@ func (p *Player) Restart() {
 		p.sampleBuf.Clear()
 	}
 
-	p.otoPlayer.Pause()
-	p.sr.clearBuf()
-	p.otoPlayer = p.otoCtx.NewPlayer(p.sr)
-	p.otoPlayer.SetVolume(p.volume)
+	p.disposeOtoPlayerLocked()
+	if p.sr != nil {
+		p.sr.clearBuf()
+	}
+	p.recreateOtoPlayerLocked(false)
 
 	p.done = make(chan struct{})
 	p.stopMon = make(chan struct{})
-	p.paused = false
-	p.otoPlayer.Play()
+	p.resumeLocked()
 
 	go p.monitor()
 }
@@ -311,12 +331,17 @@ func (p *Player) TogglePause() {
 	defer p.mu.Unlock()
 
 	if p.paused {
-		p.otoPlayer.Play()
-		p.paused = false
+		p.resumeLocked()
 	} else {
-		p.otoPlayer.Pause()
-		p.paused = true
+		p.pauseLocked()
 	}
+}
+
+// Pause pauses playback without toggling it back on.
+func (p *Player) Pause() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pauseLocked()
 }
 
 // Paused returns whether playback is paused.
@@ -328,6 +353,9 @@ func (p *Player) Paused() bool {
 
 // Position returns the current playback position.
 func (p *Player) Position() time.Duration {
+	if p == nil || p.counter == nil || p.bytesPerSec <= 0 {
+		return 0
+	}
 	pos := p.counter.Pos()
 	secs := float64(pos) / float64(p.bytesPerSec)
 	return time.Duration(secs * float64(time.Second))
@@ -338,54 +366,50 @@ func (p *Player) Duration() time.Duration {
 	return p.duration
 }
 
-// Seek moves playback by the given delta from current position.
-func (p *Player) Seek(delta time.Duration) {
+// SeekTo moves playback to the given absolute target position.
+func (p *Player) SeekTo(target time.Duration, resume bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.canSeek {
-		return
+	if p == nil || p.closed || !p.canSeek {
+		return nil
+	}
+	if p.decoder == nil {
+		p.paused = !resume
+		return nil
 	}
 
-	currentPos := p.counter.Pos()
-	deltaBytes := int64(delta.Seconds() * float64(p.bytesPerSec))
-	newPos := currentPos + deltaBytes
-
-	// Clamp to valid range
-	if newPos < 0 {
-		newPos = 0
-	}
-	totalBytes := p.decoder.Length()
-	if newPos > totalBytes {
-		newPos = totalBytes
-	}
-
-	// Align to frame boundary (channels * 2 bytes per sample)
 	frameSize := int64(p.decoder.ChannelCount()) * 2
-	newPos = newPos - (newPos % frameSize)
-
-	// Pause Oto BEFORE seeking to stop concurrent reads on the decoder
+	newPos := clampSeekByteOffset(target, p.bytesPerSec, p.decoder.Length(), frameSize)
 	wasPaused := p.paused
-	p.otoPlayer.Pause()
+	p.pauseLocked()
 
-	// Seek the decoder (safe now that Oto is paused)
 	if _, err := p.decoder.Seek(newPos, io.SeekStart); err != nil {
-		// Resume if seek failed
-		if !wasPaused {
-			p.otoPlayer.Play()
+		if resume && !wasPaused {
+			p.resumeLocked()
+		} else {
+			p.paused = wasPaused
 		}
-		return
+		return err
 	}
-	p.counter.SetPos(newPos)
+	if p.counter != nil {
+		p.counter.SetPos(newPos)
+	}
 	if p.sampleBuf != nil {
 		p.sampleBuf.Clear()
 	}
+	if p.sr != nil {
+		p.sr.clearBuf()
+	}
+	p.disposeOtoPlayerLocked()
+	p.recreateOtoPlayerLocked(resume)
+	return nil
+}
 
-	// Recreate the Oto player to flush buffers
-	p.sr.clearBuf()
-	p.otoPlayer = p.otoCtx.NewPlayer(p.sr)
-	p.otoPlayer.SetVolume(p.volume)
-	if !wasPaused {
-		p.otoPlayer.Play()
+// Seek moves playback by the given delta from current position.
+func (p *Player) Seek(delta time.Duration) {
+	target := p.Position() + delta
+	if err := p.SeekTo(target, !p.Paused()); err != nil {
+		return
 	}
 }
 
@@ -408,7 +432,9 @@ func (p *Player) SetVolume(v float64) {
 		v = 1
 	}
 	p.volume = v
-	p.otoPlayer.SetVolume(v)
+	if p.otoPlayer != nil {
+		p.otoPlayer.SetVolume(v)
+	}
 }
 
 // AdjustVolume adjusts volume by delta.
@@ -423,7 +449,9 @@ func (p *Player) AdjustVolume(delta float64) {
 		v = 1
 	}
 	p.volume = v
-	p.otoPlayer.SetVolume(v)
+	if p.otoPlayer != nil {
+		p.otoPlayer.SetVolume(v)
+	}
 }
 
 // Speed returns the current playback speed.
@@ -500,9 +528,7 @@ func (p *Player) Close() {
 	if p.stopMon != nil {
 		close(p.stopMon)
 	}
-	if p.otoPlayer != nil {
-		p.otoPlayer.Pause()
-	}
+	p.disposeOtoPlayerLocked()
 	if p.file != nil {
 		p.file.Close()
 	}
@@ -513,4 +539,50 @@ func (p *Player) Close() {
 		p.cleanup()
 		p.cleanup = nil
 	}
+}
+
+func (p *Player) pauseLocked() {
+	if p == nil || p.closed {
+		return
+	}
+	if p.otoPlayer != nil {
+		p.otoPlayer.Pause()
+	}
+	p.paused = true
+}
+
+func (p *Player) resumeLocked() {
+	if p == nil || p.closed {
+		return
+	}
+	if p.otoPlayer != nil {
+		p.otoPlayer.Play()
+	}
+	p.paused = false
+}
+
+func (p *Player) recreateOtoPlayerLocked(resume bool) {
+	if p == nil || p.closed {
+		return
+	}
+	if p.otoCtx == nil || p.sr == nil {
+		p.paused = !resume
+		return
+	}
+	p.otoPlayer = p.otoCtx.NewPlayer(p.sr)
+	p.otoPlayer.SetVolume(p.volume)
+	if resume {
+		p.resumeLocked()
+		return
+	}
+	p.paused = true
+}
+
+func (p *Player) disposeOtoPlayerLocked() {
+	if p == nil || p.otoPlayer == nil {
+		return
+	}
+	p.otoPlayer.Pause()
+	_ = p.otoPlayer.Close()
+	p.otoPlayer = nil
 }

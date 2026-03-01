@@ -7,17 +7,18 @@ func TestReorderShortSpectralKeepsGroupedSourceStride(t *testing.T) {
 		windowSequence:    windowEightShort,
 		maxSFB:            12,
 		numWindowGroups:   2,
-		windowGroupLength: []int{2, 6},
-		swbOffset:         []int{0, 4, 8, 12, 16, 20, 28, 36, 44, 56, 68, 80, 96, 112, 128},
+		windowGroupLength: []uint8{2, 6},
+		swbOffset:         []uint16{0, 4, 8, 12, 16, 20, 28, 36, 44, 56, 68, 80, 96, 112, 128},
 	}
 
 	spec := make([]float64, aacFrameSize)
 	windowBase := 0
-	for g, groupLen := range meta.windowGroupLength {
+	for g, groupLenU8 := range meta.windowGroupLength {
+		groupLen := int(groupLenU8)
 		groupBase := windowBase * shortWindowLength
 		srcOffset := 0
 		for sfb := 0; sfb < meta.maxSFB; sfb++ {
-			width := meta.swbOffset[sfb+1] - meta.swbOffset[sfb]
+			width := int(meta.swbOffset[sfb+1] - meta.swbOffset[sfb])
 			for w := 0; w < groupLen; w++ {
 				windowIndex := windowBase + w
 				value := float64((g+1)*1000 + windowIndex*100 + sfb)
@@ -33,12 +34,13 @@ func TestReorderShortSpectralKeepsGroupedSourceStride(t *testing.T) {
 	reordered := reorderShortSpectral(spec, meta)
 
 	windowBase = 0
-	for g, groupLen := range meta.windowGroupLength {
+	for g, groupLenU8 := range meta.windowGroupLength {
+		groupLen := int(groupLenU8)
 		for w := 0; w < groupLen; w++ {
 			windowIndex := windowBase + w
 			for sfb := 0; sfb < meta.maxSFB; sfb++ {
-				start := windowIndex*shortWindowLength + meta.swbOffset[sfb]
-				end := windowIndex*shortWindowLength + meta.swbOffset[sfb+1]
+				start := windowIndex*shortWindowLength + int(meta.swbOffset[sfb])
+				end := windowIndex*shortWindowLength + int(meta.swbOffset[sfb+1])
 				want := float64((g+1)*1000 + windowIndex*100 + sfb)
 				for i := start; i < end; i++ {
 					if reordered[i] != want {

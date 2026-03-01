@@ -1,5 +1,3 @@
-github.com/Comcast/gaad v1.0.0 h1:TKarT23A5/AHi77CxdOU14ZVLPjJEas49htQGfC5a5g=
-github.com/Comcast/gaad v1.0.0/go.mod h1:9bePj2CT6XO6bLrKB7qE8la6cAJIxrRgtjGbfMsNoSU=
 github.com/Eyevinn/mp4ff v0.51.0 h1:ZYdHFXEcB3kJkCeCHMHl/tbCm64FJsD2XOU0Sj+ME2M=
 github.com/Eyevinn/mp4ff v0.51.0/go.mod h1:hJNUUqOBryLAzUW9wpCJyw2HaI+TCd2rUPhafoS5lgg=
 github.com/go-test/deep v1.1.0 h1:WOcxcdHcvdgThNXjw0t76K42FXTU7HpNQWHpA2HHNlg=

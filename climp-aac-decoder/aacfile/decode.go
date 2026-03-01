@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/Comcast/gaad"
+	"github.com/olivier-w/climp-aac-decoder/third_party/gaad"
 )
 
 type channelState struct {
@@ -46,9 +46,9 @@ type icsMeta struct {
 	maxSFB            int
 	numWindows        int
 	numWindowGroups   int
-	windowGroupLength []int
-	sectSFBOffset     [][]int
-	swbOffset         []int
+	windowGroupLength []uint8
+	sectSFBOffset     [][]uint16
+	swbOffset         []uint16
 	sfbCB             [][]uint8
 }
 
@@ -63,18 +63,8 @@ type icsDecoded struct {
 	escBands     int
 	maxQuantized int
 	tnsPresent   bool
-	tnsData      *tnsFilterData
+	tnsData      *gaad.TNSData
 	tnsFilters   int
-}
-
-type tnsFilterData struct {
-	nFilt        []int
-	coefRes      []int
-	length       [][]int
-	order        [][]int
-	direction    [][]bool
-	coefCompress [][]int
-	coef         [][][]uint8
 }
 
 type channelSynthStats struct {
@@ -169,9 +159,8 @@ func (d *synthDecoder) decodeAccessUnit(src *containerSource, payload []byte, un
 	}
 }
 
-func (d *synthDecoder) decodeSCE(sce any) ([]float64, FrameTrace, error) {
-	stream := fieldAny(sce, "Channel_stream")
-	decoded, err := d.buildICSDecoded(0, stream)
+func (d *synthDecoder) decodeSCE(sce *gaad.SingleChannelElement) ([]float64, FrameTrace, error) {
+	decoded, err := d.buildICSDecoded(0, sce.Channel_stream)
 	if err != nil {
 		return nil, FrameTrace{}, err
 	}
@@ -197,20 +186,17 @@ func (d *synthDecoder) decodeSCE(sce any) ([]float64, FrameTrace, error) {
 	return d.monoOut, trace, nil
 }
 
-func (d *synthDecoder) decodeCPE(cpe any) ([]float64, FrameTrace, error) {
-	leftStream := fieldAny(cpe, "Channel_stream1")
-	rightStream := fieldAny(cpe, "Channel_stream2")
-
-	left, err := d.buildICSDecoded(0, leftStream)
+func (d *synthDecoder) decodeCPE(cpe *gaad.ChannelPairElement) ([]float64, FrameTrace, error) {
+	left, err := d.buildICSDecoded(0, cpe.Channel_stream1)
 	if err != nil {
 		return nil, FrameTrace{}, err
 	}
-	right, err := d.buildICSDecoded(1, rightStream)
+	right, err := d.buildICSDecoded(1, cpe.Channel_stream2)
 	if err != nil {
 		return nil, FrameTrace{}, err
 	}
 
-	msUsed := boolMatrix(fieldValue(cpe, "Ms_used"))
+	msUsed := cpe.Ms_used
 	d.applyPNSPair(left, right, msUsed)
 	d.applyMS(left, right, msUsed)
 	d.applyIntensity(left, right, msUsed)
@@ -246,13 +232,12 @@ func (d *synthDecoder) decodeCPE(cpe any) ([]float64, FrameTrace, error) {
 	return out, trace, nil
 }
 
-func (d *synthDecoder) buildICSDecoded(channel int, stream any) (*icsDecoded, error) {
-	info := fieldAny(stream, "Ics_info")
-	if info == nil {
+func (d *synthDecoder) buildICSDecoded(channel int, stream *gaad.IndividualChannelStream) (*icsDecoded, error) {
+	if stream == nil || stream.Ics_info == nil {
 		return nil, malformedf("missing ICS info")
 	}
 
-	meta := readICSMeta(info)
+	meta := readICSMeta(stream.Ics_info)
 	if meta == nil {
 		return nil, malformedf("building ICS metadata")
 	}
@@ -263,9 +248,9 @@ func (d *synthDecoder) buildICSDecoded(channel int, stream any) (*icsDecoded, er
 	}
 
 	scaleFactors := d.decodeScaleFactors(channel, stream, meta)
-	globalGain := int(uint8Field(stream, "Global_gain"))
-	if boolField(stream, "Pulse_data_present") {
-		applyPulseData(quantized, meta, fieldAny(stream, "Pulse_data"))
+	globalGain := int(stream.Global_gain)
+	if stream.Pulse_data_present {
+		applyPulseData(quantized, meta, stream.Pulse_data)
 	}
 	spec := d.inverseQuantize(channel, quantized)
 	applyScaleFactors(spec, meta, scaleFactors)
@@ -279,44 +264,44 @@ func (d *synthDecoder) buildICSDecoded(channel int, stream any) (*icsDecoded, er
 		scaleFactors: scaleFactors,
 		spec:         spec,
 		currentShape: meta.windowShape,
-		pulsePresent: boolField(stream, "Pulse_data_present"),
+		pulsePresent: stream.Pulse_data_present,
 		pnsBands:     countCodebookBands(meta, gaad.NOISE_HCB),
 		escBands:     countCodebookBands(meta, gaad.ESC_HCB),
 		maxQuantized: maxAbsInt(quantized),
-		tnsPresent:   boolField(stream, "Tns_data_present"),
-		tnsData:      readTNSData(fieldAny(stream, "Tns_data")),
-		tnsFilters:   countTNSFilters(fieldAny(stream, "Tns_data")),
+		tnsPresent:   stream.Tns_data_present,
+		tnsData:      stream.Tns_data,
+		tnsFilters:   countTNSFilters(stream.Tns_data),
 	}, nil
 }
 
-func readICSMeta(info any) *icsMeta {
+func readICSMeta(info *gaad.ICSInfo) *icsMeta {
+	if info == nil {
+		return nil
+	}
 	return &icsMeta{
-		windowSequence:    uint8Field(info, "Window_sequence"),
-		windowShape:       uint8Field(info, "Window_shape"),
-		maxSFB:            int(uint8Field(info, "Max_sfb")),
-		numWindows:        int(fieldValue(info, "num_windows").Uint()),
-		numWindowGroups:   int(fieldValue(info, "num_window_groups").Uint()),
-		windowGroupLength: intSlice(fieldValue(info, "window_group_length")),
-		sectSFBOffset:     uint16Matrix(fieldValue(info, "sect_sfb_offset")),
-		swbOffset:         uint16Slice(fieldValue(info, "swb_offset")),
-		sfbCB:             uint8Matrix(fieldValue(info, "sfb_cb")),
+		windowSequence:    info.Window_sequence,
+		windowShape:       info.Window_shape,
+		maxSFB:            int(info.Max_sfb),
+		numWindows:        info.NumWindows(),
+		numWindowGroups:   info.NumWindowGroups(),
+		windowGroupLength: info.WindowGroupLength(),
+		sectSFBOffset:     info.SectSFBOffset(),
+		swbOffset:         info.SWBOffset(),
+		sfbCB:             info.SFBCB(),
 	}
 }
 
-func (d *synthDecoder) decodeScaleFactors(channel int, stream any, meta *icsMeta) [][]int {
-	scaleData := fieldAny(stream, "Scale_factor_data")
-	globalGain := int(uint8Field(stream, "Global_gain"))
+func (d *synthDecoder) decodeScaleFactors(channel int, stream *gaad.IndividualChannelStream, meta *icsMeta) [][]int {
+	if stream == nil || stream.Scale_factor_data == nil {
+		return nil
+	}
+
+	scaleData := stream.Scale_factor_data
+	globalGain := int(stream.Global_gain)
 	scaleFactor := globalGain
 	noiseEnergy := globalGain - 90
 	intensityPosition := 0
 	noisePCM := true
-
-	dcpmSF := fieldValue(scaleData, "Dcpm_sf")
-	dcpmNoise := fieldValue(scaleData, "Dcpm_noise_nrg")
-	dcpmIntensity := fieldValue(scaleData, "Dcpm_is_position")
-	if !dcpmSF.IsValid() || !dcpmNoise.IsValid() || !dcpmIntensity.IsValid() {
-		return nil
-	}
 
 	scratch := &d.scratch[channel]
 	if cap(scratch.scaleFactors) < meta.numWindowGroups {
@@ -329,25 +314,25 @@ func (d *synthDecoder) decodeScaleFactors(channel int, stream any, meta *icsMeta
 		}
 		out[g] = out[g][:meta.maxSFB]
 		clear(out[g])
-		sfRow := exposeValue(dcpmSF.Index(g))
-		noiseRow := exposeValue(dcpmNoise.Index(g))
-		intensityRow := exposeValue(dcpmIntensity.Index(g))
+		sfRow := scaleData.Dcpm_sf[g]
+		noiseRow := scaleData.Dcpm_noise_nrg[g]
+		intensityRow := scaleData.Dcpm_is_position[g]
 		for sfb := 0; sfb < meta.maxSFB; sfb++ {
 			switch meta.sfbCB[g][sfb] {
 			case gaad.ZERO_HCB:
 			case gaad.INTENSITY_HCB, gaad.INTENSITY_HCB2:
-				intensityPosition += numericValue(exposeValue(intensityRow.Index(sfb))) - 60
+				intensityPosition += int(intensityRow[sfb]) - 60
 				out[g][sfb] = intensityPosition
 			case gaad.NOISE_HCB:
 				if noisePCM {
 					noisePCM = false
-					noiseEnergy += numericValue(exposeValue(noiseRow.Index(sfb))) - 256
+					noiseEnergy += int(noiseRow[sfb]) - 256
 				} else {
-					noiseEnergy += numericValue(exposeValue(noiseRow.Index(sfb))) - 60
+					noiseEnergy += int(noiseRow[sfb]) - 60
 				}
 				out[g][sfb] = noiseEnergy
 			default:
-				scaleFactor += numericValue(exposeValue(sfRow.Index(sfb))) - 60
+				scaleFactor += int(sfRow[sfb]) - 60
 				out[g][sfb] = scaleFactor
 			}
 		}
@@ -355,12 +340,11 @@ func (d *synthDecoder) decodeScaleFactors(channel int, stream any, meta *icsMeta
 	return out
 }
 
-func (d *synthDecoder) rebuildQuantizedSpectral(channel int, stream any, meta *icsMeta) ([]int, error) {
-	specData := fieldAny(stream, "Spectral_data")
-	hcod := fieldValue(specData, "Hcod")
-	if !hcod.IsValid() {
+func (d *synthDecoder) rebuildQuantizedSpectral(channel int, stream *gaad.IndividualChannelStream, meta *icsMeta) ([]int, error) {
+	if stream == nil || stream.Spectral_data == nil {
 		return nil, malformedf("missing spectral data")
 	}
+	hcod := stream.Spectral_data.Hcod
 
 	spec := d.scratch[channel].quantized[:aacFrameSize]
 	clear(spec)
@@ -377,29 +361,29 @@ func (d *synthDecoder) rebuildQuantizedSpectral(channel int, stream any, meta *i
 				continue
 			}
 
-			start := meta.sectSFBOffset[g][sfb]
-			end := meta.sectSFBOffset[g][sfb+1]
+			start := int(meta.sectSFBOffset[g][sfb])
+			end := int(meta.sectSFBOffset[g][sfb+1])
 			step := 4
 			if cb >= gaad.FIRST_PAIR_HCB {
 				step = 2
 			}
 
 			for k := start; k < end; k += step {
-				if huffIndex >= hcod.Len() {
+				if huffIndex >= len(hcod) {
 					return nil, fmt.Errorf("malformed spectral data")
 				}
-				row := exposeValue(hcod.Index(huffIndex))
+				row := hcod[huffIndex]
 				huffIndex++
-				for i := 0; i < row.Len(); i++ {
+				for i := 0; i < int(row.Count); i++ {
 					pos := groupBase + k + i
 					if pos >= len(spec) {
 						return nil, malformedf("spectral coefficient overflow")
 					}
-					spec[pos] = numericValue(exposeValue(row.Index(i)))
+					spec[pos] = row.Values[i]
 				}
 			}
 		}
-		windowBase += meta.windowGroupLength[g]
+		windowBase += int(meta.windowGroupLength[g])
 	}
 
 	return spec, nil
@@ -428,30 +412,30 @@ func applyScaleFactors(spec []float64, meta *icsMeta, scaleFactors [][]int) {
 
 			sf := scaleFactors[g][sfb]
 			scale := math.Pow(2, 0.25*float64(sf-100))
-			start := groupBase + meta.sectSFBOffset[g][sfb]
-			end := groupBase + meta.sectSFBOffset[g][sfb+1]
+			start := groupBase + int(meta.sectSFBOffset[g][sfb])
+			end := groupBase + int(meta.sectSFBOffset[g][sfb+1])
 			for i := start; i < end; i++ {
 				spec[i] *= scale
 			}
 		}
-		windowBase += meta.windowGroupLength[g]
+		windowBase += int(meta.windowGroupLength[g])
 	}
 }
 
-func applyPulseData(spec []int, meta *icsMeta, pulse any) {
+func applyPulseData(spec []int, meta *icsMeta, pulse *gaad.PulseData) {
 	if pulse == nil || meta.windowSequence == windowEightShort {
 		return
 	}
 
-	numberPulse := int(uint8Field(pulse, "Number_pulse")) + 1
-	startSFB := int(uint8Field(pulse, "Pulse_start_sfb"))
-	offsets := uint8Slice(fieldValue(pulse, "Pulse_offset"))
-	amps := uint8Slice(fieldValue(pulse, "Pulse_amp"))
+	numberPulse := int(pulse.Number_pulse) + 1
+	startSFB := int(pulse.Pulse_start_sfb)
+	offsets := pulse.Pulse_offset
+	amps := pulse.Pulse_amp
 	if startSFB >= len(meta.swbOffset) {
 		return
 	}
 
-	k := meta.swbOffset[startSFB]
+	k := int(meta.swbOffset[startSFB])
 	for i := 0; i < numberPulse && i < len(offsets) && i < len(amps); i++ {
 		k += int(offsets[i])
 		if k < 0 || k >= len(spec) {
@@ -470,12 +454,12 @@ func (d *synthDecoder) reorderShortSpectral(channel int, spec []float64, meta *i
 	clear(out)
 	windowBase := 0
 	for g := 0; g < meta.numWindowGroups; g++ {
-		groupLen := meta.windowGroupLength[g]
+		groupLen := int(meta.windowGroupLength[g])
 		groupBase := windowBase * shortWindowLength
 		srcOffset := 0
 		for sfb := 0; sfb < meta.maxSFB; sfb++ {
-			start := meta.swbOffset[sfb]
-			end := meta.swbOffset[sfb+1]
+			start := int(meta.swbOffset[sfb])
+			end := int(meta.swbOffset[sfb+1])
 			width := end - start
 			for w := 0; w < groupLen; w++ {
 				dst := (windowBase+w)*shortWindowLength + start
@@ -496,12 +480,12 @@ func reorderShortSpectral(spec []float64, meta *icsMeta) []float64 {
 	out := make([]float64, len(spec))
 	windowBase := 0
 	for g := 0; g < meta.numWindowGroups; g++ {
-		groupLen := meta.windowGroupLength[g]
+		groupLen := int(meta.windowGroupLength[g])
 		groupBase := windowBase * shortWindowLength
 		srcOffset := 0
 		for sfb := 0; sfb < meta.maxSFB; sfb++ {
-			start := meta.swbOffset[sfb]
-			end := meta.swbOffset[sfb+1]
+			start := int(meta.swbOffset[sfb])
+			end := int(meta.swbOffset[sfb+1])
 			width := end - start
 			for w := 0; w < groupLen; w++ {
 				dst := (windowBase+w)*shortWindowLength + start
@@ -518,23 +502,25 @@ func reorderShortSpectral(spec []float64, meta *icsMeta) []float64 {
 func (d *synthDecoder) applyPNSMono(ch *icsDecoded) {
 	windowBase := 0
 	for g := 0; g < ch.meta.numWindowGroups; g++ {
+		groupLen := int(ch.meta.windowGroupLength[g])
 		for sfb := 0; sfb < ch.meta.maxSFB; sfb++ {
 			if ch.meta.sfbCB[g][sfb] != gaad.NOISE_HCB {
 				continue
 			}
-			for w := 0; w < ch.meta.windowGroupLength[g]; w++ {
+			for w := 0; w < groupLen; w++ {
 				start, end := ch.meta.bandRange(windowBase+w, sfb)
 				noise := d.generateNoise(0, end-start)
 				scaleNoise(ch.spec[start:end], noise, ch.scaleFactors[g][sfb])
 			}
 		}
-		windowBase += ch.meta.windowGroupLength[g]
+		windowBase += groupLen
 	}
 }
 
 func (d *synthDecoder) applyPNSPair(left, right *icsDecoded, msUsed [][]bool) {
 	windowBase := 0
 	for g := 0; g < left.meta.numWindowGroups; g++ {
+		groupLen := int(left.meta.windowGroupLength[g])
 		for sfb := 0; sfb < left.meta.maxSFB; sfb++ {
 			leftNoise := left.meta.sfbCB[g][sfb] == gaad.NOISE_HCB
 			rightNoise := right.meta.sfbCB[g][sfb] == gaad.NOISE_HCB
@@ -543,7 +529,7 @@ func (d *synthDecoder) applyPNSPair(left, right *icsDecoded, msUsed [][]bool) {
 			}
 
 			useSame := leftNoise && rightNoise && msBandUsed(msUsed, g, sfb)
-			for w := 0; w < left.meta.windowGroupLength[g]; w++ {
+			for w := 0; w < groupLen; w++ {
 				if leftNoise {
 					start, end := left.meta.bandRange(windowBase+w, sfb)
 					noise := d.generateNoise(0, end-start)
@@ -561,13 +547,14 @@ func (d *synthDecoder) applyPNSPair(left, right *icsDecoded, msUsed [][]bool) {
 				}
 			}
 		}
-		windowBase += left.meta.windowGroupLength[g]
+		windowBase += groupLen
 	}
 }
 
 func (d *synthDecoder) applyMS(left, right *icsDecoded, msUsed [][]bool) {
 	windowBase := 0
 	for g := 0; g < left.meta.numWindowGroups; g++ {
+		groupLen := int(left.meta.windowGroupLength[g])
 		for sfb := 0; sfb < left.meta.maxSFB; sfb++ {
 			if !msBandUsed(msUsed, g, sfb) {
 				continue
@@ -581,7 +568,7 @@ func (d *synthDecoder) applyMS(left, right *icsDecoded, msUsed [][]bool) {
 				continue
 			}
 
-			for w := 0; w < left.meta.windowGroupLength[g]; w++ {
+			for w := 0; w < groupLen; w++ {
 				lStart, lEnd := left.meta.bandRange(windowBase+w, sfb)
 				rStart, _ := right.meta.bandRange(windowBase+w, sfb)
 				for i := 0; i < lEnd-lStart; i++ {
@@ -592,13 +579,14 @@ func (d *synthDecoder) applyMS(left, right *icsDecoded, msUsed [][]bool) {
 				}
 			}
 		}
-		windowBase += left.meta.windowGroupLength[g]
+		windowBase += groupLen
 	}
 }
 
 func (d *synthDecoder) applyIntensity(left, right *icsDecoded, msUsed [][]bool) {
 	windowBase := 0
 	for g := 0; g < right.meta.numWindowGroups; g++ {
+		groupLen := int(right.meta.windowGroupLength[g])
 		for sfb := 0; sfb < right.meta.maxSFB; sfb++ {
 			cb := right.meta.sfbCB[g][sfb]
 			if cb != gaad.INTENSITY_HCB && cb != gaad.INTENSITY_HCB2 {
@@ -614,7 +602,7 @@ func (d *synthDecoder) applyIntensity(left, right *icsDecoded, msUsed [][]bool) 
 			}
 			scale := sign * math.Pow(0.5, 0.25*float64(right.scaleFactors[g][sfb]))
 
-			for w := 0; w < right.meta.windowGroupLength[g]; w++ {
+			for w := 0; w < groupLen; w++ {
 				lStart, lEnd := left.meta.bandRange(windowBase+w, sfb)
 				rStart, _ := right.meta.bandRange(windowBase+w, sfb)
 				for i := 0; i < lEnd-lStart; i++ {
@@ -622,7 +610,7 @@ func (d *synthDecoder) applyIntensity(left, right *icsDecoded, msUsed [][]bool) 
 				}
 			}
 		}
-		windowBase += right.meta.windowGroupLength[g]
+		windowBase += groupLen
 	}
 }
 
@@ -677,9 +665,9 @@ func msBandUsed(msUsed [][]bool, group, sfb int) bool {
 func (m *icsMeta) bandRange(windowIndex, sfb int) (int, int) {
 	if m.windowSequence == windowEightShort {
 		base := windowIndex * shortWindowLength
-		return base + m.swbOffset[sfb], base + m.swbOffset[sfb+1]
+		return base + int(m.swbOffset[sfb]), base + int(m.swbOffset[sfb+1])
 	}
-	return m.swbOffset[sfb], m.swbOffset[sfb+1]
+	return int(m.swbOffset[sfb]), int(m.swbOffset[sfb+1])
 }
 
 func floatToPCM16(sample float64) int16 {
@@ -766,11 +754,13 @@ func countMSBands(msUsed [][]bool) int {
 	return count
 }
 
-func countTNSFilters(data any) int {
-	nFilt := intSlice(fieldValue(data, "N_filt"))
+func countTNSFilters(data *gaad.TNSData) int {
+	if data == nil {
+		return 0
+	}
 	total := 0
-	for _, n := range nFilt {
-		total += n
+	for _, n := range data.N_filt {
+		total += int(n)
 	}
 	return total
 }
@@ -810,47 +800,4 @@ func maxAbsInt(values []int) int {
 		}
 	}
 	return peak
-}
-
-func readTNSData(data any) *tnsFilterData {
-	nFilt := intSlice(fieldValue(data, "N_filt"))
-	coefRes := intSlice(fieldValue(data, "Coef_res"))
-	length := uint8Matrix(fieldValue(data, "Len"))
-	order := uint8Matrix(fieldValue(data, "Order"))
-	direction := boolMatrix(fieldValue(data, "Direction"))
-	coefCompress := uint8Matrix(fieldValue(data, "Coef_compress"))
-	coef := uint8Cube(fieldValue(data, "Coef"))
-
-	if len(nFilt) == 0 {
-		return nil
-	}
-
-	out := &tnsFilterData{
-		nFilt:        nFilt,
-		coefRes:      coefRes,
-		length:       make([][]int, len(length)),
-		order:        make([][]int, len(order)),
-		direction:    direction,
-		coefCompress: make([][]int, len(coefCompress)),
-		coef:         coef,
-	}
-	for i := range length {
-		out.length[i] = make([]int, len(length[i]))
-		for j := range length[i] {
-			out.length[i][j] = int(length[i][j])
-		}
-	}
-	for i := range order {
-		out.order[i] = make([]int, len(order[i]))
-		for j := range order[i] {
-			out.order[i][j] = int(order[i][j])
-		}
-	}
-	for i := range coefCompress {
-		out.coefCompress[i] = make([]int, len(coefCompress[i]))
-		for j := range coefCompress[i] {
-			out.coefCompress[i][j] = int(coefCompress[i][j])
-		}
-	}
-	return out
 }

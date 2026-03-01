@@ -3,6 +3,8 @@ package aacfile
 import (
 	"fmt"
 	"math"
+
+	"github.com/olivier-w/climp-aac-decoder/third_party/gaad"
 )
 
 func (d *synthDecoder) applyTNSTools(ch *icsDecoded) error {
@@ -26,11 +28,11 @@ func (d *synthDecoder) applyTNSTools(ch *icsDecoded) error {
 
 	for w := 0; w < ch.meta.numWindows; w++ {
 		bottomBand := swbLimit
-		filterCount := ch.tnsData.filterCountForWindow(w)
+		filterCount := tnsFilterCountForWindow(ch.tnsData, w)
 		for filt := 0; filt < filterCount; filt++ {
 			topBand := bottomBand
-			length := ch.tnsData.filterLength(w, filt)
-			order := ch.tnsData.filterOrder(w, filt)
+			length := tnsFilterLength(ch.tnsData, w, filt)
+			order := tnsFilterOrder(ch.tnsData, w, filt)
 			bottomBand -= length
 			if bottomBand < 0 {
 				bottomBand = 0
@@ -50,8 +52,8 @@ func (d *synthDecoder) applyTNSTools(ch *icsDecoded) error {
 				return malformedf("invalid TNS band range")
 			}
 
-			startLine := ch.meta.swbOffset[startBand]
-			endLine := ch.meta.swbOffset[endBand]
+			startLine := int(ch.meta.swbOffset[startBand])
+			endLine := int(ch.meta.swbOffset[endBand])
 			if endLine < startLine {
 				return malformedf("invalid TNS spectral line range")
 			}
@@ -71,7 +73,7 @@ func (d *synthDecoder) applyTNSTools(ch *icsDecoded) error {
 
 			index := start
 			step := 1
-			if ch.tnsData.filterDirection(w, filt) {
+			if tnsFilterDirection(ch.tnsData, w, filt) {
 				index = end - 1
 				step = -1
 			}
@@ -99,53 +101,53 @@ func tnsMaxSFB(sampleRateIndex int, short bool) int {
 	return tnsMaxBandsLong[sampleRateIndex]
 }
 
-func (t *tnsFilterData) filterCountForWindow(window int) int {
-	if t == nil || window < 0 || window >= len(t.nFilt) {
+func tnsFilterCountForWindow(t *gaad.TNSData, window int) int {
+	if t == nil || window < 0 || window >= len(t.N_filt) {
 		return 0
 	}
-	return t.nFilt[window]
+	return int(t.N_filt[window])
 }
 
-func (t *tnsFilterData) filterLength(window, filt int) int {
-	if t == nil || window < 0 || window >= len(t.length) || filt < 0 || filt >= len(t.length[window]) {
+func tnsFilterLength(t *gaad.TNSData, window, filt int) int {
+	if t == nil || window < 0 || window >= len(t.Len) || filt < 0 || filt >= len(t.Len[window]) {
 		return 0
 	}
-	return t.length[window][filt]
+	return int(t.Len[window][filt])
 }
 
-func (t *tnsFilterData) filterOrder(window, filt int) int {
-	if t == nil || window < 0 || window >= len(t.order) || filt < 0 || filt >= len(t.order[window]) {
+func tnsFilterOrder(t *gaad.TNSData, window, filt int) int {
+	if t == nil || window < 0 || window >= len(t.Order) || filt < 0 || filt >= len(t.Order[window]) {
 		return 0
 	}
-	return t.order[window][filt]
+	return int(t.Order[window][filt])
 }
 
-func (t *tnsFilterData) filterDirection(window, filt int) bool {
-	if t == nil || window < 0 || window >= len(t.direction) || filt < 0 || filt >= len(t.direction[window]) {
+func tnsFilterDirection(t *gaad.TNSData, window, filt int) bool {
+	if t == nil || window < 0 || window >= len(t.Direction) || filt < 0 || filt >= len(t.Direction[window]) {
 		return false
 	}
-	return t.direction[window][filt]
+	return t.Direction[window][filt]
 }
 
-func (d *synthDecoder) tnsCoefficients(t *tnsFilterData, window, filt, order int) ([]float64, error) {
-	if t == nil || window < 0 || window >= len(t.coef) || filt < 0 || filt >= len(t.coef[window]) {
+func (d *synthDecoder) tnsCoefficients(t *gaad.TNSData, window, filt, order int) ([]float64, error) {
+	if t == nil || window < 0 || window >= len(t.Coef) || filt < 0 || filt >= len(t.Coef[window]) {
 		return nil, malformedf("invalid TNS filter metadata")
 	}
 
 	baseBits := 3
-	if window < len(t.coefRes) && t.coefRes[window] > 0 {
+	if window < len(t.Coef_res) && t.Coef_res[window] > 0 {
 		baseBits = 4
 	}
 	compress := 0
-	if window < len(t.coefCompress) && filt < len(t.coefCompress[window]) {
-		compress = t.coefCompress[window][filt]
+	if window < len(t.Coef_compress) && filt < len(t.Coef_compress[window]) {
+		compress = int(t.Coef_compress[window][filt])
 	}
 	coefBits := baseBits - compress
 	if coefBits < 2 || coefBits > 4 {
 		return nil, unvalidatedFeature("AAC TNS coefficient width", fmt.Sprintf("%d", coefBits))
 	}
 
-	raw := t.coef[window][filt]
+	raw := t.Coef[window][filt]
 	if order > len(raw) {
 		return nil, malformedf("invalid TNS coefficient count")
 	}

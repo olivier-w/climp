@@ -19,7 +19,7 @@ package gaad
 import (
 	"fmt"
 
-	"github.com/Comcast/gaad/bitreader"
+	"github.com/olivier-w/climp-aac-decoder/third_party/gaad/bitreader"
 )
 
 // Implementation adapted from MediaInfo Project and FAAD2
@@ -2655,30 +2655,40 @@ func hcod_binary(reader *bitreader.BitReader, codebook uint8, values []int) erro
 }
 
 // Select the correct lookup method based on the codebook
-func hcod(reader *bitreader.BitReader, sect_cb uint8) ([]int, error) {
-	var err error
-	var values []int
+func hcod(reader *bitreader.BitReader, sect_cb uint8, out *spectral_huffman_code) error {
+	if out == nil {
+		return fmt.Errorf("Error: nil spectral Huffman destination")
+	}
+	var (
+		err    error
+		values []int
+	)
+	out.Count = 0
 
 	// call the optimal search method for each case
 	switch sect_cb {
 	case 1, 2, 4:
-		values = make([]int, 4)
+		out.Count = 4
+		values = out.Values[:4:4]
 		err = hcod_2step(reader, sect_cb, values)
 	case 3:
-		values = make([]int, 4)
+		out.Count = 4
+		values = out.Values[:4:4]
 		err = hcod_binary(reader, sect_cb, values)
 	case 5, 7, 9:
-		values = make([]int, 2)
+		out.Count = 2
+		values = out.Values[:2:2]
 		err = hcod_binary(reader, sect_cb, values)
 	case 6, 8, 10, 11:
-		values = make([]int, 2)
+		out.Count = 2
+		values = out.Values[:2:2]
 		err = hcod_2step(reader, sect_cb, values)
 	default:
-		return values, fmt.Errorf("Error: codebook (%d) is unsupported", sect_cb)
+		return fmt.Errorf("Error: codebook (%d) is unsupported", sect_cb)
 	}
 
 	if err != nil {
-		return values, err
+		return err
 	}
 
 	// account for sign bits in the bitstream
@@ -2717,7 +2727,7 @@ func hcod(reader *bitreader.BitReader, sect_cb uint8) ([]int, error) {
 		}
 	}
 
-	return values, nil
+	return nil
 }
 
 // BEGIN SBR

@@ -239,6 +239,15 @@ func newFromDecoder(file *os.File, dec audioDecoder, canSeek bool) (*Player, err
 	}
 
 	p.otoPlayer = ctx.NewPlayer(sr)
+	if p.otoPlayer == nil {
+		if file != nil {
+			file.Close()
+		}
+		if c, ok := dec.(io.Closer); ok {
+			c.Close()
+		}
+		return nil, fmt.Errorf("creating audio output player")
+	}
 	p.otoPlayer.SetVolume(p.volume)
 	p.otoPlayer.Play()
 
@@ -569,10 +578,14 @@ func (p *Player) recreateOtoPlayerLocked(resume bool) {
 		return
 	}
 	if p.otoCtx == nil || p.sr == nil {
-		p.paused = !resume
+		p.paused = true
 		return
 	}
 	p.otoPlayer = p.otoCtx.NewPlayer(p.sr)
+	if p.otoPlayer == nil {
+		p.paused = true
+		return
+	}
 	p.otoPlayer.SetVolume(p.volume)
 	if resume {
 		p.resumeLocked()

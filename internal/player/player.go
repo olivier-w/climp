@@ -120,6 +120,9 @@ func warmAudioOutput(ctx *oto.Context, sampleRate, channelCount int) {
 
 	silence := bytes.NewReader(make([]byte, byteCount))
 	player := ctx.NewPlayer(silence)
+	if player == nil {
+		return
+	}
 	player.SetVolume(0)
 	player.Play()
 	time.Sleep(warmup)

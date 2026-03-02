@@ -69,7 +69,6 @@ type Player struct {
 	sampleBuf    *visualizer.RingBuffer
 	canSeek      bool
 	titleUpdates <-chan string
-	cleanup      func()
 }
 
 type liveTitleProvider interface {
@@ -165,7 +164,6 @@ func clampSeekByteOffset(target time.Duration, bytesPerSec int, totalBytes, fram
 	}
 	return newPos
 }
-
 // New creates a new Player for the given audio file path.
 func New(path string) (*Player, error) {
 	f, err := os.Open(path)
@@ -546,10 +544,6 @@ func (p *Player) Close() {
 	}
 	if c, ok := p.decoder.(io.Closer); ok {
 		c.Close()
-	}
-	if p.cleanup != nil {
-		p.cleanup()
-		p.cleanup = nil
 	}
 }
 

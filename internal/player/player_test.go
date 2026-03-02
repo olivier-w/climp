@@ -83,19 +83,15 @@ func TestSeekToClampsAndAlignsToFrameBoundary(t *testing.T) {
 	}
 }
 
-func TestPlayerCloseRunsCleanupOnceTransport(t *testing.T) {
-	calls := 0
+func TestPlayerCloseIsIdempotentTransport(t *testing.T) {
 	p := &Player{
 		stopMon: make(chan struct{}),
-		cleanup: func() {
-			calls++
-		},
 	}
 
 	p.Close()
 	p.Close()
 
-	if calls != 1 {
-		t.Fatalf("expected cleanup to run once, got %d", calls)
+	if !p.closed {
+		t.Fatal("expected player to remain closed")
 	}
 }

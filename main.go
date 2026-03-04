@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime/debug"
 	"sort"
 	"strings"
 
@@ -14,11 +16,20 @@ import (
 	"github.com/olivier-w/climp/internal/media"
 	"github.com/olivier-w/climp/internal/player"
 	"github.com/olivier-w/climp/internal/ui"
+	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 )
 
 const maxRemotePlaylistDepth = 2
 
 var version = "dev"
+
+var (
+	readBuildInfo      = debug.ReadBuildInfo
+	resolveGitVersion  = gitTaggedDevVersion
+	releasePseudoRE    = regexp.MustCompile(`^(v.+)-0\.\d{14}-[0-9A-Za-z]+$`)
+	prereleasePseudoRE = regexp.MustCompile(`^(v.+)\.0\.\d{14}-[0-9A-Za-z]+$`)
+)
 
 func main() {
 	if len(os.Args) >= 2 {
@@ -269,10 +280,70 @@ func displayVersion() string {
 	if version != "dev" {
 		return version
 	}
-	if gitVersion, ok := gitTaggedDevVersion(); ok {
+	if buildVersion, ok := buildInfoDisplayVersion(); ok {
+		return buildVersion
+	}
+	if gitVersion, ok := resolveGitVersion(); ok {
 		return gitVersion
 	}
 	return version
+}
+
+func buildInfoDisplayVersion() (string, bool) {
+	info, ok := readBuildInfo()
+	if !ok || info == nil {
+		return "", false
+	}
+	return normalizeEmbeddedVersion(info.Main.Version)
+}
+
+func normalizeEmbeddedVersion(v string) (string, bool) {
+	switch v {
+	case "", "(devel)":
+		return "", false
+	}
+
+	if !module.IsPseudoVersion(v) {
+		canonical := semver.Canonical(v)
+		if canonical == "" {
+			return "", false
+		}
+		return canonical, true
+	}
+
+	base, err := module.PseudoVersionBase(v)
+	if err != nil {
+		return "", false
+	}
+	if base == "" {
+		return "", false
+	}
+
+	if normalized, ok := normalizePseudoVersionPrefix(v, prereleasePseudoRE); ok {
+		return normalized, true
+	}
+	if normalized, ok := normalizePseudoVersionPrefix(v, releasePseudoRE); ok {
+		return normalized, true
+	}
+
+	canonicalBase := semver.Canonical(base)
+	if canonicalBase == "" {
+		return "", false
+	}
+	return canonicalBase, true
+}
+
+func normalizePseudoVersionPrefix(v string, pattern *regexp.Regexp) (string, bool) {
+	matches := pattern.FindStringSubmatch(v)
+	if len(matches) != 2 {
+		return "", false
+	}
+
+	canonical := semver.Canonical(matches[1])
+	if canonical == "" {
+		return "", false
+	}
+	return canonical, true
 }
 
 func gitTaggedDevVersion() (string, bool) {

@@ -62,7 +62,7 @@ climp -v
 climp --version
 ```
 
-`climp` with no arguments opens the file browser. `-h` / `--help` print startup usage, and `-v` / `--version` print the binary version and exit. Release binaries print the release tag, while dev builds print a tag-derived `-dev` version when run from a git checkout and fall back to `dev` otherwise.
+`climp` with no arguments opens the file browser. `-h` / `--help` print startup usage, and `-v` / `--version` print the binary version and exit. Release binaries print the release tag. Installs from `go install github.com/olivier-w/climp@latest` use embedded Go module metadata, which typically prints the latest release tag and may print the next in-progress version when `latest` resolves to an untagged commit. Local dev builds still print a tag-derived `-dev` version when run from a git checkout and fall back to `dev` otherwise.
 
 If a URL contains `&` (common for YouTube playlist or radio links), wrap it in quotes so your shell passes the full URL to `climp`.
 

@@ -14,6 +14,7 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/mewkiz/flac v1.0.13
 	github.com/olivier-w/climp-aac-decoder v0.1.0
+	golang.org/x/mod v0.33.0
 )
 
 require (

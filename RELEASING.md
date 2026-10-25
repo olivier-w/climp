@@ -2,7 +2,7 @@
 
 `climp` releases are driven by Git tags.
 
-- Pushing a tag matching `v*` triggers [`.github/workflows/release.yml`](.github/workflows/release.yml)
+- Pushing a tag matching `v*` triggers [`.github/workflows/release.yml`](.github/workflows/release.yml); the workflow accepts only `vMAJOR.MINOR.PATCH` with an optional prerelease suffix
 - The workflow builds Linux, macOS, and Windows binaries
 - The workflow verifies `climp --version`
 - The workflow uploads archives to the matching GitHub Release
@@ -91,6 +91,9 @@ goreleaser release --clean
 - confirm all 5 archives are present on the GitHub Release
 - confirm the Windows archive name uses the `v` prefix
 - confirm `climp --version` prints the new tag from a release binary
+- inspect each binary with `go version -m` and confirm that its Go version meets `go.mod`
+- use FFmpeg/ffprobe 9.0.2 or later and yt-dlp 2026.10.21 or later; these tools are installed separately from Climp
+- check trusted and rejected certificates, including HLS child requests, in an isolated local fixture before release
 - confirm the README links resolve correctly
 - confirm Scoop updates to the new version
 

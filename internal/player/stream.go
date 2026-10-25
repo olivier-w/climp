@@ -1,10 +1,13 @@
 package player
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -27,12 +30,16 @@ func newStreamDecoder(url string) (*streamDecoder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ffmpeg not found (required for live stream playback)")
 	}
+	if err := checkStreamTLS(ffmpeg); err != nil {
+		return nil, err
+	}
 
 	cmd := exec.Command(
 		ffmpeg,
 		"-nostdin",
 		"-hide_banner",
 		"-loglevel", "error",
+		"-tls_verify", "1",
 		"-reconnect", "1",
 		"-reconnect_streamed", "1",
 		"-reconnect_delay_max", "5",
@@ -73,6 +80,27 @@ func newStreamDecoder(url string) (*streamDecoder, error) {
 		close(d.waitDone)
 	}()
 	return d, nil
+}
+
+// HLS child requests can use fresh TLS connections without the input options.
+// Require verification by default so those connections also check certificates.
+func checkStreamTLS(ffmpeg string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-h", "protocol=tls").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("checking ffmpeg TLS support: %w", err)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "-tls_verify" {
+			if strings.Contains(line, "(default true)") || strings.Contains(line, "(default 1)") {
+				return nil
+			}
+			break
+		}
+	}
+	return fmt.Errorf("live streams require ffmpeg with TLS verification enabled by default; update ffmpeg to 9.0.2 or later")
 }
 
 func (d *streamDecoder) Read(p []byte) (int, error) {

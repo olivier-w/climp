@@ -36,7 +36,6 @@ func newStreamDecoder(url string) (*streamDecoder, error) {
 		"-nostdin",
 		"-hide_banner",
 		"-loglevel", "error",
-		"-tls_verify", "1",
 		"-reconnect", "1",
 		"-reconnect_streamed", "1",
 		"-reconnect_delay_max", "5",

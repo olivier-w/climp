@@ -27,6 +27,9 @@ func newStreamDecoder(url string) (*streamDecoder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ffmpeg not found (required for live stream playback)")
 	}
+	if err := checkStreamTLS(ffmpeg); err != nil {
+		return nil, err
+	}
 
 	cmd := exec.Command(
 		ffmpeg,

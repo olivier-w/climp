@@ -116,8 +116,8 @@ climp https://youtube.com/watch?v=dQw4w9WgXcQ
 
 Requirements:
 
-- `yt-dlp` is required for finite URL playback and YouTube sources
-- `ffmpeg` is required for live URL playback
+- `yt-dlp` 2026.10.21 or later is required for finite URL playback and YouTube sources
+- `ffmpeg` 9.0.2 or later with TLS support is required for live URL playback
 - `ffmpeg` is also required for `s` (save as MP3) on downloaded URL tracks
 
 Behavior notes:
@@ -125,6 +125,7 @@ Behavior notes:
 - finite URL downloads use WAV temp files for fast processing
 - if `yt-dlp` reports no progress for 15 seconds, climp exits instead of hanging
 - live streams are non-seekable
+- live playback requires FFmpeg certificate verification to be enabled by default, including for HLS child requests; update the tool and its CA store if this check fails
 - when a live stream exposes ICY metadata, the now-playing title updates automatically; otherwise climp keeps the original fallback title
 - local `.aac`, `.m4a`, and `.m4b` playback is routed through the standalone `climp-aac-decoder` module
 - `climp-aac-decoder` decodes local AAC-family files natively in Go and exposes a seekable PCM reader to the normal local decoder path

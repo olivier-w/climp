@@ -189,8 +189,8 @@ try {
     Write-Host "  git tag $normalizedVersion"
     Write-Host "  git push origin $normalizedVersion"
     Write-Host "  gh release view $normalizedVersion --repo olivier-w/climp"
-    Write-Host '  $env:GITHUB_TOKEN = "<token with repo access>"'
-    Write-Host "  goreleaser release --clean"
+    Write-Host "  Review all draft assets and release notes before publishing."
+    Write-Host "  Update README links and Scoop after publication."
 } finally {
     Pop-Location
 }
